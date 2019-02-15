@@ -10,12 +10,12 @@ use syn::{
     Pat, PatIdent, TraitItem, Type,
 };
 
-/// Generates a JSONRPCServer implementaion for &dyn TraitName
+/// Generates a JSONRPCServer implementaion for `&dyn TraitName`.
 ///
 /// ```
-/// use easy_jsonrpc::{
-///     self, Call, Id, JSONRPCServer, MethodCall, Params, Request, Response, Version, Output,
-///     Success,
+/// use easy_jsonrpc::{self, JSONRPCServer};
+/// use jsonrpc_core::types::{
+///     Call, Id, MethodCall, Params, Request, Response, Version, Output, Success,
 /// };
 /// use serde_json::json;
 ///
