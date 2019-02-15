@@ -12,3 +12,6 @@ syn = { version = "0.15.26", features = ["full"] }
 proc-macro2 = "0.4.26"
 quote = "0.6.11"
 
+[dev-dependencies]
+easy-jsonrpc = { path = "../" }
+serde_json = "1"
