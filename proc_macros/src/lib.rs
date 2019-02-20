@@ -1,6 +1,5 @@
 // Allow JSONRPCServer to be derived for a trait using the '#[jsonrpc_server]' macro.
 
-#![feature(proc_macro_diagnostic)]
 #![recursion_limit = "256"]
 
 extern crate proc_macro;
@@ -121,6 +120,7 @@ fn add_handler(
     let arg_name_literals = args.iter().map(|(id, _)| id.to_string());
     let parse_args = args.iter().enumerate().map(|(index, (ident, ty))| {
         let argname_literal = format!("\"{}\"", ident);
+        // non-lexical lifetimes make it possible to create a reference to an anonymous owned value
         let prefix = match ty {
             syn::Type::Reference(_) => quote! { & },
             _ => quote! {},
@@ -142,12 +142,9 @@ fn add_handler(
         let mut args: Vec<easy_jsonrpc::Value> =
             easy_jsonrpc::get_rpc_args(&[#(#arg_name_literals),*], params)
             .map_err(|a| a.into())?;
-
         let mut ordered_args = args.drain(..);
-
-        // call the target procedure
-        let res = <#trait_name>::#method_name(self, #(#parse_args),*);
-
+        let res = <#trait_name>::#method_name(self, #(#parse_args),*); // call the target procedure
+        debug_assert_eq!(ordered_args.next(), None); // parse_args must consume ordered_args
         res
     }})
 }
