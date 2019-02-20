@@ -4,10 +4,10 @@
 
 extern crate proc_macro;
 use proc_macro2::{self, Span};
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::{
     parse_macro_input, spanned::Spanned, ArgSelfRef, FnArg, FnDecl, Ident, ItemTrait, MethodSig,
-    Pat, PatIdent, TraitItem, Type,
+    Pat, PatIdent, ReturnType, TraitItem, Type,
 };
 
 /// Generates a JSONRPCServer implementaion for `&dyn TraitName`.
@@ -84,8 +84,14 @@ fn impl_server(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
 
     let handlers = methods.iter().map(|method| {
         let method_literal = method.ident.to_string();
+        let method_return_type_span = return_type_span(&method);
         let handler = add_handler(trait_name, method)?;
-        Ok(quote! { #method_literal => easy_jsonrpc::try_serialize(& #handler) })
+        let try_serialize = quote_spanned! {method_return_type_span =>
+        easy_jsonrpc::try_serialize(&result)};
+        Ok(quote! { #method_literal => {
+            let result = #handler;
+            #try_serialize
+        }})
     });
     let handlers: Vec<proc_macro2::TokenStream> = partition(handlers)?;
 
@@ -100,6 +106,16 @@ fn impl_server(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
             }
         }
     })
+}
+
+fn return_type_span(method: &MethodSig) -> Span {
+    let return_type = match &method.decl.output {
+        ReturnType::Default => None,
+        ReturnType::Type(_, typ) => Some(typ),
+    };
+    return_type
+        .map(|typ| typ.span())
+        .unwrap_or_else(|| method.decl.output.span().clone())
 }
 
 // return all methods in the trait, or reject if trait contains an item that is not a method
@@ -125,7 +141,7 @@ fn add_handler(
             syn::Type::Reference(_) => quote! { & },
             _ => quote! {},
         };
-        quote! { #prefix {
+        quote_spanned! { ty.span() => #prefix {
             let next_arg = ordered_args.next().expect(
                 "RPC method Got too few args. This is a bug." // checked in get_rpc_args
             );
