@@ -12,6 +12,7 @@ pub trait Adder {
     fn checked_add(&self, a: isize, b: isize) -> Option<isize>;
     fn wrapping_add(&self, a: isize, b: isize) -> isize;
     fn is_some(&self, a: Option<usize>) -> bool;
+    fn takes_ref(&self, rf: &isize);
 }
 
 struct AdderImpl;
@@ -26,6 +27,7 @@ impl Adder for AdderImpl {
     fn is_some(&self, a: Option<usize>) -> bool {
         a.is_some()
     }
+    fn takes_ref(&self, rf: &isize) {}
 }
 
 // create an rpc handler
@@ -50,6 +52,12 @@ assert_eq!(
 assert_eq!(
     adder.handle_raw(r#"{"jsonrpc": "2.0", "method": "wrapping_add", "params": [1, 1]}"#),
     None
+);
+
+// Calls with no return value return unit, aka `()` in rust, aka `null` in json
+assert_eq!(
+    adder.handle_raw(r#"{"jsonrpc": "2.0", "method": "takes_ref", "params": [1], "id": 1}"#),
+    Some(r#"{"jsonrpc":"2.0","result":null,"id":1}"#.into())
 );
 ```
 

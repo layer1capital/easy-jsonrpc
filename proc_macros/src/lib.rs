@@ -1,5 +1,6 @@
 // Allow JSONRPCServer to be derived for a trait using the '#[jsonrpc_server]' macro.
 
+#![feature(proc_macro_diagnostic)]
 #![recursion_limit = "256"]
 
 extern crate proc_macro;
@@ -65,10 +66,7 @@ pub fn jsonrpc_server(
 fn raise_if_err(res: Result<proc_macro2::TokenStream, Rejections>) -> proc_macro2::TokenStream {
     match res {
         Ok(stream) => stream,
-        Err(rej) => {
-            rej.raise();
-            proc_macro2::TokenStream::new()
-        }
+        Err(rej) => rej.raise(),
     }
 }
 
@@ -121,9 +119,13 @@ fn add_handler(
     let method_name = &method.ident;
     let args = get_args(&method.decl)?;
     let arg_name_literals = args.iter().map(|(id, _)| id.to_string());
-    let parse_args = args.iter().enumerate().map(|(index, (ident, _))| {
+    let parse_args = args.iter().enumerate().map(|(index, (ident, ty))| {
         let argname_literal = format!("\"{}\"", ident);
-        quote! {{
+        let prefix = match ty {
+            syn::Type::Reference(_) => quote! { & },
+            _ => quote! {},
+        };
+        quote! { #prefix {
             let next_arg = ordered_args.next().expect(
                 "RPC method Got too few args. This is a bug." // checked in get_rpc_args
             );
@@ -199,7 +201,6 @@ fn as_jsonrpc_arg(arg: &FnArg) -> Result<(&Ident, &Type), Rejections> {
     let ty = &arg.ty;
     let pat_ident = match &arg.pat {
         Pat::Ident(pat_ident) => Ok(pat_ident),
-        Pat::Ref(r) => Err(Rejection::create(r.span(), Reason::ReferenceArg)),
         a => Err(Rejection::create(a.span(), Reason::PatternMatchedArg)),
     }?;
     let ident = match pat_ident {
@@ -252,17 +253,18 @@ struct Rejections {
 
 impl Rejections {
     // report all contained rejections
-    fn raise(self) {
-        self.first.raise();
-        for rej in self.rest.iter() {
-            rej.raise()
+    fn raise(self) -> proc_macro2::TokenStream {
+        let Rejections { first, mut rest } = self;
+        let first_err = first.raise();
+        let rest_err = rest.drain(..).map(Rejection::raise);
+        quote! {
+            #first_err
+            #(#rest_err)*
         }
     }
 }
 
-// syn's neat error reporting capabilities don't work yet on stable.
-// When 'proc_macro_diagnostic' lands on stable, we can add nicer error reporting with Spans.
-// Example:
+// syn's neat error reporting capabilities let us provide helpful errors like the following:
 //
 // ```
 // error: expected type, found `{`
@@ -271,18 +273,13 @@ impl Rejections {
 // 1 | fn main() -> {
 //   |              ^
 // ```
-//
-// more info: https://github.com/rust-lang/rust/issues/54140
-//
-// For now, we just panic!() with an error message.
 impl Rejection {
     fn create(span: Span, reason: Reason) -> Self {
         Rejection { span, reason }
     }
 
-    // For now, we'll panic with an error message. When #![feature(proc_macro_diagnostic)]
-    // becomes available, we'll be able to output pretty errors just like rustc!
-    fn raise(self) {
+    // generate a compile_err!() from self
+    fn raise(self) -> proc_macro2::TokenStream {
         let description = match self.reason {
             Reason::FirstArgumentNotSelfRef => "First argument to jsonrpc method must be &self.",
             Reason::PatternMatchedArg => {
@@ -300,7 +297,8 @@ impl Rejection {
             Reason::ReferenceArg => "Reference arguments not supported in jsonrpc macro.",
             Reason::MutableArg => "Mutable arguments not supported in jsonrpc macro.",
         };
-        panic!("{:?} {}", self.span, description);
+
+        syn::Error::new(self.span, description).to_compile_error()
     }
 }
 
