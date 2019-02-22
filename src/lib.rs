@@ -86,7 +86,7 @@ This library contains a server generator. No client generator has been implement
 //   if T implements                  fn f(&self, args..) -> R
 //   then JSONRPCClient<T> implements fn f(&self, args..) -> Future<Result<R, E>>
 
-pub use jsonrpc_proc_macro::jsonrpc_server;
+pub use easy_jsonrpc_proc_macro::jsonrpc_server;
 use serde::ser::Serialize;
 
 // used from generated code
