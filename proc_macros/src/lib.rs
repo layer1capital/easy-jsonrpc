@@ -3,51 +3,14 @@
 #![recursion_limit = "256"]
 
 extern crate proc_macro;
+use heck::SnakeCase;
 use proc_macro2::{self, Span};
 use quote::{quote, quote_spanned};
 use syn::{
-    parse_macro_input, spanned::Spanned, ArgSelfRef, FnArg, FnDecl, Ident, ItemTrait, MethodSig,
-    Pat, PatIdent, ReturnType, TraitItem, Type,
+    parse_macro_input, punctuated::Punctuated, spanned::Spanned, token::Paren, ArgSelfRef, FnArg,
+    FnDecl, Ident, ItemTrait, MethodSig, Pat, PatIdent, ReturnType, TraitItem, Type, TypeTuple,
 };
 
-/// Generates a JSONRPCServer implementaion for `&dyn TraitName`.
-///
-/// ```
-/// use easy_jsonrpc::{self, JSONRPCServer};
-/// use jsonrpc_core::types::{
-///     Call, Id, MethodCall, Params, Request, Response, Version, Output, Success,
-/// };
-/// use serde_json::json;
-///
-/// #[easy_jsonrpc::jsonrpc_server]
-/// trait ExampleApi {
-///     fn frob(&self, thing: Vec<bool>) -> Vec<Vec<bool>>;
-/// }
-///
-/// impl ExampleApi for () {
-///     fn frob(&self, thing: Vec<bool>) -> Vec<Vec<bool>> {
-///         eprintln!("Initiate frobbing.");
-///         vec![thing]
-///     }
-/// }
-///
-/// let rpc_handler = (&() as &dyn ExampleApi);
-///
-/// let request = Request::Single(Call::MethodCall(MethodCall {
-///     jsonrpc: Some(Version::V2),
-///     method: "frob".into(),
-///     params: Params::Array(vec![json!([false, false, true])]),
-///     id: Id::Num(1),
-/// }));
-///
-/// let response = Some(Response::Single(Output::Success(Success {
-///     jsonrpc: Some(Version::V2),
-///     result: json!([[false, false, true]]),
-///     id: Id::Num(1),
-/// })));
-///
-/// assert_eq!(rpc_handler.handle_parsed(request), response);
-/// ```
 #[proc_macro_attribute]
 pub fn jsonrpc_server(
     _: proc_macro::TokenStream,
@@ -58,6 +21,18 @@ pub fn jsonrpc_server(
     proc_macro::TokenStream::from(quote! {
         #trait_def
         #server_impl
+    })
+}
+
+#[proc_macro_attribute]
+pub fn rpc(_: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let trait_def = parse_macro_input!(item as ItemTrait);
+    let server_impl = raise_if_err(impl_server(&trait_def));
+    let client_impl = raise_if_err(impl_client(&trait_def));
+    proc_macro::TokenStream::from(quote! {
+        #trait_def
+        #server_impl
+        #client_impl
     })
 }
 
@@ -73,14 +48,6 @@ fn raise_if_err(res: Result<proc_macro2::TokenStream, Rejections>) -> proc_macro
 fn impl_server(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
     let trait_name = &tr.ident;
     let methods: Vec<&MethodSig> = trait_methods(&tr)?;
-
-    partition(methods.iter().map(|method| {
-        if method.ident.to_string().starts_with("rpc.") {
-            Err(Rejection::create(method.ident.span(), Reason::ReservedMethodPrefix).into())
-        } else {
-            Ok(())
-        }
-    }))?;
 
     let handlers = methods.iter().map(|method| {
         let method_literal = method.ident.to_string();
@@ -108,6 +75,95 @@ fn impl_server(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
     })
 }
 
+fn impl_client(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
+    let trait_name = &tr.ident;
+    let methods: Vec<&MethodSig> = trait_methods(&tr)?;
+    let mod_name = Ident::new(&trait_name.to_string().to_snake_case(), Span::call_site());
+    let method_impls = methods
+        .iter()
+        .map(|method| impl_client_method(*method))
+        .collect::<Result<Vec<proc_macro2::TokenStream>, Rejections>>()?;
+
+    Ok(quote! {
+        mod #mod_name {
+            use super::easy_jsonrpc::*;
+
+            #(#method_impls)*
+        }
+    })
+}
+
+fn impl_client_method(method: &MethodSig) -> Result<proc_macro2::TokenStream, Rejections> {
+    let method_name = &method.ident;
+    let method_name_literal = &method_name.to_string();
+    let args = get_args(&method.decl)?;
+    let fn_definition_args: &Vec<_> = &args
+        .iter()
+        .enumerate()
+        .map(|(i, (name, typ))| {
+            let arg_num_name = Ident::new(&format!("arg{}", i), name.span());
+            quote! {#arg_num_name: #typ}
+        })
+        .collect();
+    let args_serialize: &Vec<_> = &args
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            let arg_num_name = Ident::new(&format!("arg{}", i), name.span());
+            quote! {
+                serde_json::to_value(#arg_num_name).map_err(|_| ArgSerializeError)?
+            }
+        })
+        .collect();
+    let return_typ = return_type(&method);
+
+    Ok(quote! {
+        #[allow(non_camel_case_types)]
+        pub struct #method_name {
+            id: u64,
+        }
+
+        impl #method_name {
+            // calls with random id
+            pub fn call(
+                #(#fn_definition_args),*
+            ) -> Result<(MethodCall, Self), ArgSerializeError> {
+                let id = rand::random::<u64>();
+                let mc = MethodCall {
+                    jsonrpc: Some(Version::V2),
+                    id: Id::Num(id),
+                    method: #method_name_literal.to_owned(),
+                    params: Params::Array(vec![
+                        #(#args_serialize),*
+                    ]),
+                };
+                Ok((mc, Self { id }))
+            }
+
+            pub fn notification(
+                #(#fn_definition_args),*
+            ) -> Result<Notification, ArgSerializeError> {
+                Ok(Notification {
+                    jsonrpc: Some(Version::V2),
+                    method: "checked_add".to_owned(),
+                    params: Params::Array(vec![
+                        #(#args_serialize),*
+                    ]),
+                })
+            }
+
+            // make sure ids match, parse response
+            pub fn response(&self, response: &Success) -> Result<#return_typ, ResponseFail> {
+                if response.id != Id::Num(self.id) {
+                    return Err(ResponseFail::IdMismatch);
+                }
+                <#return_typ>::deserialize(&response.result)
+                    .map_err(|_| ResponseFail::InvalidResponse)
+            }
+        }
+    })
+}
+
 fn return_type_span(method: &MethodSig) -> Span {
     let return_type = match &method.decl.output {
         ReturnType::Default => None,
@@ -118,12 +174,32 @@ fn return_type_span(method: &MethodSig) -> Span {
         .unwrap_or_else(|| method.decl.output.span().clone())
 }
 
+fn return_type(method: &MethodSig) -> Type {
+    match &method.decl.output {
+        ReturnType::Default => Type::Tuple(TypeTuple {
+            paren_token: Paren {
+                span: method.decl.output.span(),
+            },
+            elems: Punctuated::new(),
+        }),
+        ReturnType::Type(_, typ) => *typ.clone(),
+    }
+}
+
 // return all methods in the trait, or reject if trait contains an item that is not a method
 fn trait_methods<'a>(tr: &'a ItemTrait) -> Result<Vec<&'a MethodSig>, Rejections> {
-    partition(tr.items.iter().map(|item| match item {
+    let methods = partition(tr.items.iter().map(|item| match item {
         TraitItem::Method(method) => Ok(&method.sig),
         other => Err(Rejection::create(other.span(), Reason::TraitNotStrictlyMethods).into()),
-    }))
+    }))?;
+    partition(methods.iter().map(|method| {
+        if method.ident.to_string().starts_with("rpc.") {
+            Err(Rejection::create(method.ident.span(), Reason::ReservedMethodPrefix).into())
+        } else {
+            Ok(())
+        }
+    }))?;
+    Ok(methods)
 }
 
 // generate code that parses rpc arguments and calls the given method

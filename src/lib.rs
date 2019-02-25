@@ -43,7 +43,7 @@ assert_eq!(
 // Named arguments are handled automatically
 assert_eq!(
     adder.handle_raw(
-        r#"{"jsonrpc": "2.0", "method": "wrapping_add", "params": {"a": 1, "b":2}, "id": 1}"#
+        r#"{"jsonrpc": "2.0", "method": "wrapping_add", "params": {"a": 1, "b": 2}, "id": 1}"#
     ),
     Some(r#"{"jsonrpc":"2.0","result":3,"id":1}"#.into())
 );
@@ -61,32 +61,80 @@ assert_eq!(
 );
 ```
 
-Multilple types may implement the trait
+Another example using handle_parsed instead of handle_raw.
 
 ```
-# use easy_jsonrpc::{self, JSONRPCServer};
+use easy_jsonrpc::{self, JSONRPCServer};
+use jsonrpc_core::types::{
+    Call, Id, MethodCall, Params, Request, Response, Version, Output, Success,
+};
+use serde_json::json;
 
 #[easy_jsonrpc::jsonrpc_server]
-pub trait Useless {}
+trait ExampleApi {
+    fn frob(&self, thing: Vec<bool>) -> Vec<Vec<bool>>;
+}
 
-struct ImplOne;
+impl ExampleApi for () {
+    fn frob(&self, thing: Vec<bool>) -> Vec<Vec<bool>> {
+        eprintln!("Initiate frobbing.");
+        vec![thing]
+    }
+}
 
-impl Useless for ImplOne {}
+let rpc_handler = (&() as &dyn ExampleApi);
 
-enum ImplTwo {}
+let request = Request::Single(Call::MethodCall(MethodCall {
+    jsonrpc: Some(Version::V2),
+    method: "frob".into(),
+    params: Params::Array(vec![json!([false, false, true])]),
+    id: Id::Num(1),
+}));
 
-impl Useless for ImplTwo {}
+let response = Some(Response::Single(Output::Success(Success {
+    jsonrpc: Some(Version::V2),
+    result: json!([[false, false, true]]),
+    id: Id::Num(1),
+})));
+
+assert_eq!(rpc_handler.handle_parsed(request), response);
 ```
 
-This library contains a server generator. No client generator has been implemented yet.
+Easy JSON RPC also generates typed client helpers.
+
+```
+use easy_jsonrpc::{self, JSONRPCServer};
+use jsonrpc_core::types::*;
+
+#[easy_jsonrpc::rpc]
+trait Example {
+    fn greet(&self, name: String) -> String;
+}
+
+impl Example for () {
+    fn greet(&self, name: String) -> String {
+        format!("Hello, {}!", name)
+    }
+}
+
+let rpc_handler = &() as &dyn Example;
+
+let (call, reciever) = example::greet::call("Shane".to_owned()).unwrap();
+let request = Request::Single(Call::MethodCall(call));
+let raw_request = serde_json::to_string(&request).unwrap();
+let raw_response = rpc_handler.handle_raw(&raw_request).unwrap();
+let response: Response = serde_json::from_str(&raw_response).unwrap();
+let success = match response {
+    Response::Single(Output::Success(s)) => s,
+    _ => panic!(),
+};
+assert_eq!(&reciever.response(&success).unwrap(), "Hello, Shane!");
+```
 */
 
-// The JSONRPCClient generator design is still WIP, but ideally clients will satisfy this
-// property:
-//   if T implements                  fn f(&self, args..) -> R
-//   then JSONRPCClient<T> implements fn f(&self, args..) -> Future<Result<R, E>>
-
 pub use easy_jsonrpc_proc_macro::jsonrpc_server;
+pub use easy_jsonrpc_proc_macro::rpc;
+
 use serde::ser::Serialize;
 
 // used from generated code
@@ -95,6 +143,10 @@ pub use jsonrpc_core::types::{
     Call, Error, ErrorCode, Failure, Id, MethodCall, Notification, Output, Params, Request,
     Response, Success, Value, Version,
 };
+#[doc(hidden)]
+pub use rand;
+#[doc(hidden)]
+pub use serde::de::Deserialize;
 #[doc(hidden)]
 pub use serde_json;
 
@@ -258,6 +310,19 @@ pub fn try_serialize<T: Serialize>(t: &T) -> Result<Value, Error> {
         data: None,
     })
 }
+
+/// Error returned when parsing a response on client side fail
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub enum ResponseFail {
+    IdMismatch,
+    InvalidResponse, // returned on serde::de failure
+}
+
+/// Thrown when arguments fail to be serialized. Possible causes include, but are not limited to:
+/// - A poisoned mutex
+/// - A cstring containing invalid utf-8
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub struct ArgSerializeError;
 
 #[cfg(test)]
 mod test {
@@ -463,5 +528,138 @@ mod test {
             serde_json::from_str(r#"{"jsonrpc": "2.0", "method": "succeed", "params": []}"#)
                 .unwrap();
         assert_eq!((&AdderImpl {} as &dyn Adder).handle_parsed(request), None);
+    }
+
+    #[test]
+    fn adder_client_non_macro() {
+        #[easy_jsonrpc::jsonrpc_server]
+        trait Adder {
+            fn checked_add(&self, a: usize, b: usize) -> Option<usize> {
+                a.checked_add(b)
+            }
+        }
+
+        mod adder {
+            use super::easy_jsonrpc::*;
+
+            #[allow(non_camel_case_types)]
+            pub struct checked_add {
+                id: u64,
+            }
+
+            impl checked_add {
+                // calls with random id
+                pub fn call(
+                    arg0: usize,
+                    arg1: usize,
+                ) -> Result<(MethodCall, Self), ArgSerializeError> {
+                    let id = rand::random::<u64>();
+                    let mc = MethodCall {
+                        jsonrpc: Some(Version::V2),
+                        id: Id::Num(id),
+                        method: "checked_add".to_owned(),
+                        params: Params::Array(vec![
+                            serde_json::to_value(arg0).map_err(|_| ArgSerializeError)?,
+                            serde_json::to_value(arg1).map_err(|_| ArgSerializeError)?,
+                        ]),
+                    };
+                    Ok((mc, Self { id }))
+                }
+
+                pub fn notification(
+                    arg0: usize,
+                    arg1: usize,
+                ) -> Result<Notification, ArgSerializeError> {
+                    Ok(Notification {
+                        jsonrpc: Some(Version::V2),
+                        method: "checked_add".to_owned(),
+                        params: Params::Array(vec![
+                            serde_json::to_value(arg0).map_err(|_| ArgSerializeError)?,
+                            serde_json::to_value(arg1).map_err(|_| ArgSerializeError)?,
+                        ]),
+                    })
+                }
+
+                // make sure ids match, parse response
+                pub fn response(&self, response: &Success) -> Result<Option<usize>, ResponseFail> {
+                    if response.id != Id::Num(self.id) {
+                        return Err(ResponseFail::IdMismatch);
+                    }
+                    <Option<usize>>::deserialize(&response.result)
+                        .map_err(|_| ResponseFail::InvalidResponse)
+                }
+            }
+        }
+
+        impl Adder for () {}
+
+        let handler = &() as &dyn Adder;
+
+        let (method_call, tracker) = adder::checked_add::call(1, 2).unwrap();
+        let output = handler.handle_call(Call::MethodCall(method_call)).unwrap();
+        let success = match output {
+            Output::Success(s) => s,
+            Output::Failure(_) => panic!(),
+        };
+        let result: Option<usize> = tracker.response(&success).unwrap();
+        assert_eq!(result, Some(3));
+
+        let notification = adder::checked_add::notification(1, 2).unwrap();
+        let output = handler.handle_call(Call::Notification(notification));
+        assert_eq!(output, None);
+    }
+
+    #[test]
+    fn adder_client_with_macro() {
+        #[easy_jsonrpc::rpc]
+        trait Adder {
+            fn checked_add(&self, a: usize, b: usize) -> Option<usize> {
+                a.checked_add(b)
+            }
+        }
+
+        impl Adder for () {}
+
+        let handler = &() as &dyn Adder;
+
+        let (method_call, tracker) = adder::checked_add::call(1, 2).unwrap();
+        let output = handler.handle_call(Call::MethodCall(method_call)).unwrap();
+        let success = match output {
+            Output::Success(s) => s,
+            Output::Failure(_) => panic!(),
+        };
+        let result: Option<usize> = tracker.response(&success).unwrap();
+        assert_eq!(result, Some(3));
+
+        let notification = adder::checked_add::notification(1, 2).unwrap();
+        let output = handler.handle_call(Call::Notification(notification));
+        assert_eq!(output, None);
+    }
+
+    #[test]
+    fn client_with_reference_args() {
+        #[easy_jsonrpc::rpc]
+        trait Adder {
+            fn checked_add(&self, a: usize, b: &usize) -> Option<usize> {
+                a.checked_add(*b)
+            }
+        }
+
+        impl Adder for () {}
+
+        let handler = &() as &dyn Adder;
+
+        let (method_call, tracker) = adder::checked_add::call(1, &2).unwrap();
+        let output = handler.handle_call(Call::MethodCall(method_call)).unwrap();
+        let success = match output {
+            Output::Success(s) => s,
+            Output::Failure(_) => panic!(),
+        };
+        let result: Option<usize> = tracker.response(&success).unwrap();
+        assert_eq!(result, Some(3));
+
+        let notification = adder::checked_add::notification(1, &2).unwrap();
+        let output = handler.handle_call(Call::Notification(notification));
+        assert_eq!(output, None);
     }
 }
