@@ -127,38 +127,45 @@ fn impl_client_method(method: &MethodSig) -> Result<proc_macro2::TokenStream, Re
             // calls with random id
             pub fn call(
                 #(#fn_definition_args),*
-            ) -> Result<(MethodCall, Self), ArgSerializeError> {
+            ) -> Result<(Call<'static>, Self), ArgSerializeError> {
                 let id = rand::random::<u64>();
-                let mc = MethodCall {
-                    jsonrpc: Some(Version::V2),
-                    id: Id::Num(id),
-                    method: #method_name_literal.to_owned(),
-                    params: Params::Array(vec![
+                let mc = Call {
+                    id: Some(id),
+                    method: #method_name_literal,
+                    args: vec![
                         #(#args_serialize),*
-                    ]),
+                    ],
                 };
                 Ok((mc, Self { id }))
             }
 
             pub fn notification(
                 #(#fn_definition_args),*
-            ) -> Result<Notification, ArgSerializeError> {
-                Ok(Notification {
-                    jsonrpc: Some(Version::V2),
-                    method: "checked_add".to_owned(),
-                    params: Params::Array(vec![
+            ) -> Result<Call<'static>, ArgSerializeError> {
+                Ok(Call {
+                    id: None,
+                    method: #method_name_literal,
+                    args: vec![
                         #(#args_serialize),*
-                    ]),
+                    ],
                 })
             }
 
-            // make sure ids match, parse response
-            pub fn response(&self, response: &Success) -> Result<#return_typ, ResponseFail> {
-                if response.id != Id::Num(self.id) {
-                    return Err(ResponseFail::IdMismatch);
-                }
-                <#return_typ>::deserialize(&response.result)
-                    .map_err(|_| ResponseFail::InvalidResponse)
+            /// Get typed return value from server response.
+            /// If response contains the return value for this request, remove it from the
+            /// server response, attempt to interpret the return value as a typed value.
+            pub fn get_return(
+                &self,
+                response: &mut Response,
+            ) -> Result<#return_typ, ResponseFail> {
+                response
+                    .remove(self.id)
+                    .ok_or(ResponseFail::ResultNotFound)
+                    .and_then(|result| result.map_err(ResponseFail::RpcError))
+                    .and_then(|raw_return| {
+                        <#return_typ>::deserialize(&raw_return)
+                            .map_err(|_| ResponseFail::InvalidResponse)
+                    })
             }
         }
     })
@@ -232,8 +239,8 @@ fn add_handler(
 
     Ok(quote! {{
         let mut args: Vec<easy_jsonrpc::Value> =
-            easy_jsonrpc::get_rpc_args(&[#(#arg_name_literals),*], params)
-            .map_err(|a| a.into())?;
+            params.get_rpc_args(&[#(#arg_name_literals),*])
+                .map_err(|a| a.into())?;
         let mut ordered_args = args.drain(..);
         let res = <#trait_name>::#method_name(self, #(#parse_args),*); // call the target procedure
         debug_assert_eq!(ordered_args.next(), None); // parse_args must consume ordered_args
