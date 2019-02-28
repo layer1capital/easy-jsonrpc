@@ -7,7 +7,7 @@ Generates rpc handlers based on a trait definition.
 use easy_jsonrpc::{self, JSONRPCServer};
 
 // the jsonrpc_server generates a JSONRPCServer for &dyn Adder
-#[easy_jsonrpc::jsonrpc_server]
+#[easy_jsonrpc::rpc]
 pub trait Adder {
     fn checked_add(&self, a: isize, b: isize) -> Option<isize>;
     fn wrapping_add(&self, a: isize, b: isize) -> isize;
@@ -34,9 +34,12 @@ impl Adder for AdderImpl {
 let adder = (&AdderImpl {} as &dyn Adder);
 
 assert_eq!(
-    adder.handle_raw(
-        r#"{"jsonrpc": "2.0", "method": "wrapping_add", "params": [1, 2], "id": 1}"#
-    ),
+    adder.handle_request(json!({
+        "jsonrpc": "2.0",
+        "method": "wrapping_add",
+        "params": [1, 2],
+        "id": 1
+    })),
     Some(r#"{"jsonrpc":"2.0","result":3,"id":1}"#.into())
 );
 
@@ -137,9 +140,6 @@ const SERIALZATION_ERROR: i64 = -32000;
 pub use easy_jsonrpc_proc_macro::jsonrpc_server;
 pub use easy_jsonrpc_proc_macro::rpc;
 
-use serde::ser::Serialize;
-use std::collections::BTreeMap;
-
 // used from generated code
 #[doc(hidden)]
 pub use jsonrpc_core::types::{
@@ -150,7 +150,11 @@ pub use rand;
 #[doc(hidden)]
 pub use serde::de::Deserialize;
 #[doc(hidden)]
-pub use serde_json::{self, json, Value};
+pub use serde_json::{self, Value};
+
+use serde::ser::Serialize;
+use serde_json::json;
+use std::collections::BTreeMap;
 
 /// Handles jsonrpc calls.
 pub trait JSONRPCServer {
@@ -489,9 +493,8 @@ mod test {
         pub use crate::*;
     }
     use super::JSONRPCServer;
-    use assert_matches::assert_matches;
     use jsonrpc_core;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[easy_jsonrpc::rpc]
     pub trait Adder {
@@ -535,18 +538,24 @@ mod test {
         }
     }
 
-    fn assert_adder_response(request: &str, response: &str) {
+    fn assert_adder_response(request: Value, response: Value) {
         assert_eq!(
-            &(&AdderImpl {} as &dyn Adder).handle_raw(request).unwrap(),
+            (&AdderImpl {} as &dyn Adder)
+                .handle_request(request)
+                .unwrap(),
             response
         );
     }
 
-    fn handle_single(request: Value) -> Output {
-        let a: Option<Response> =
-            (&AdderImpl {} as &dyn Adder).handle_request(request);
-        match a {
-            Some(Response::Single(a)) => a,
+    fn error_code(request: Value) -> jsonrpc_core::ErrorCode {
+        let raw_response = (&AdderImpl {} as &dyn Adder)
+            .handle_request(request)
+            .unwrap();
+        let response: jsonrpc_core::Response = serde_json::from_value(raw_response).unwrap();
+        match response {
+            jsonrpc_core::Response::Single(jsonrpc_core::Output::Failure(
+                jsonrpc_core::Failure { error, .. },
+            )) => error.code,
             _ => panic!(),
         }
     }
@@ -555,10 +564,15 @@ mod test {
     fn positional_args() {
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "wrapping_add", "params": [1, 1], "id": 1
+                "jsonrpc": "2.0",
+                "method": "wrapping_add",
+                "params": [1, 1],
+                "id": 1
             }),
             json!({
-                "jsonrpc":"2.0","result":2,"id":1
+                "jsonrpc": "2.0",
+                "result": 2,
+                "id": 1
             }),
         );
     }
@@ -567,10 +581,18 @@ mod test {
     fn named_args() {
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "wrapping_add", "params": {"a": 1, "b":1}, "id": 1
+                "jsonrpc": "2.0",
+                "method": "wrapping_add",
+                "params": {
+                    "a": 1,
+                    "b": 1
+                },
+                "id": 1
             }),
             json!({
-                "jsonrpc":"2.0","result":2,"id":1
+                "jsonrpc": "2.0",
+                "result": 2,
+                "id": 1
             }),
         );
     }
@@ -578,31 +600,44 @@ mod test {
     #[test]
     fn null_args() {
         let response = json!({
-            "jsonrpc":"2.0","result":"hello","id":1
+            "jsonrpc": "2.0",
+            "result": "hello",
+            "id": 1
         });
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "greet", "params": {}, "id": 1
+                "jsonrpc": "2.0",
+                "method": "greet",
+                "params": {},
+                "id": 1
             }),
-            response,
+            response.clone(),
         );
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "greet", "params": [], "id": 1
+                "jsonrpc": "2.0",
+                "method": "greet",
+                "params": [],
+                "id": 1
             }),
-            response,
+            response.clone(),
         );
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "greet", "params": null, "id": 1
+                "jsonrpc": "2.0",
+                "method": "greet",
+                "params": null,
+                "id": 1
             }),
-            response,
+            response.clone(),
         );
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "greet", "id": 1
+                "jsonrpc": "2.0",
+                "method": "greet",
+                "id": 1
             }),
-            response,
+            response.clone(),
         );
     }
 
@@ -610,74 +645,65 @@ mod test {
     fn null_return() {
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "swallow", "params": [], "id": 1
+                "jsonrpc": "2.0",
+                "method": "swallow",
+                "params": [],
+                "id": 1
             }),
             json!({
-                "jsonrpc":"2.0","result":null,"id":1
+                "jsonrpc": "2.0",
+                "result": null,
+                "id": 1
             }),
         );
     }
 
-    // #[test]
-    // fn incorrect_method_name() {
-    //     assert_matches!(
-    //         handle_single(json!({
-    //             "jsonrpc": "2.0", "method": "nonexist", "params": [], "id": 1
-    //         })),
-    //         Output::Failure(Failure {
-    //             error:
-    //                 Error {
-    //                     code: ErrorCode::MethodNotFound,
-    //                     ..
-    //                 },
-    //             ..
-    //         })
-    //     );
-    // }
+    #[test]
+    fn incorrect_method_name() {
+        assert_eq!(
+            error_code(json!({
+                "jsonrpc": "2.0",
+                "method": "nonexist",
+                "params": [],
+                "id": 1
+            })),
+            jsonrpc_core::ErrorCode::MethodNotFound,
+        );
+    }
 
-    // #[test]
-    // fn incorrect_args() {
-    //     assert_matches!(
-    //         handle_single(json!({
-    //             "jsonrpc": "2.0", "method": "wrapping_add", "params": [], "id": 1
-    //         })),
-    //         Output::Failure(Failure {
-    //             error:
-    //                 Error {
-    //                     code: ErrorCode::InvalidParams,
-    //                     ..
-    //                 },
-    //             ..
-    //         })
-    //     );
-    //     assert_matches!(
-    //         handle_single(json!({
-    //             "jsonrpc": "2.0", "method": "wrapping_add", "params": {
-    //                 "notanarg": 1, "notarg": 1}, "id": 1
-    //         })),
-    //         Output::Failure(Failure {
-    //             error:
-    //                 Error {
-    //                     code: ErrorCode::InvalidParams,
-    //                     ..
-    //                 },
-    //             ..
-    //         })
-    //     );
-    //     assert_matches!(
-    //         handle_single(json!({
-    //             "jsonrpc": "2.0", "method": "wrapping_add", "params": [[], []], "id": 1
-    //         })),
-    //         Output::Failure(Failure {
-    //             error:
-    //                 Error {
-    //                     code: ErrorCode::InvalidParams,
-    //                     ..
-    //                 },
-    //             ..
-    //         })
-    //     );
-    // }
+    #[test]
+    fn incorrect_args() {
+        assert_eq!(
+            error_code(json!({
+                "jsonrpc": "2.0",
+                "method": "wrapping_add",
+                "params": [],
+                "id": 1
+            })),
+            jsonrpc_core::ErrorCode::InvalidParams,
+        );
+        assert_eq!(
+            error_code(json!({
+                "jsonrpc": "2.0",
+                "method": "wrapping_add",
+                "params": {
+                    "notanarg": 1,
+                    "notarg": 1
+                },
+                "id": 1
+            })),
+            jsonrpc_core::ErrorCode::InvalidParams,
+        );
+        assert_eq!(
+            error_code(json!({
+                "jsonrpc": "2.0",
+                "method": "wrapping_add",
+                "params": [[], []],
+                "id": 1
+            })),
+            jsonrpc_core::ErrorCode::InvalidParams,
+        );
+    }
 
     #[test]
     fn complex_type() {
@@ -694,33 +720,43 @@ mod test {
                 "id": 1
             }),
         );
-        assert_matches!(
-            handle_single(json!({
-                "jsonrpc": "2.0", "method": "repeat_list", "params": [[1], [12]], "id": 1
+        assert_eq!(
+            error_code(json!({
+                "jsonrpc": "2.0",
+                "method": "repeat_list",
+                "params": [[1], [12]],
+                "id": 1
             }),),
-            Output::Failure(Failure {
-                error:
-                    Error {
-                        code: ErrorCode::InvalidParams,
-                        ..
-                    },
-                ..
-            })
+            jsonrpc_core::ErrorCode::InvalidParams,
         );
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "fail", "params": [], "id": 1
+                "jsonrpc": "2.0",
+                "method": "fail",
+                "params": [],
+                "id": 1
             }),
             json!({
-                "jsonrpc":"2.0","result":{"Err":"tada!"},"id":1
+                "jsonrpc": "2.0",
+                "result": {
+                    "Err": "tada!"
+                },
+                "id": 1
             }),
         );
         assert_adder_response(
             json!({
-                "jsonrpc": "2.0", "method": "succeed", "params": [], "id": 1
+                "jsonrpc": "2.0",
+                "method": "succeed",
+                "params": [],
+                "id": 1
             }),
             json!({
-                "jsonrpc":"2.0","result":{"Ok":1},"id":1
+                "jsonrpc": "2.0",
+                "result": {
+                    "Ok": 1
+                },
+                "id": 1
             }),
         );
     }

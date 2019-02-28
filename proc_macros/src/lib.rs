@@ -11,6 +11,7 @@ use syn::{
     FnDecl, Ident, ItemTrait, MethodSig, Pat, PatIdent, ReturnType, TraitItem, Type, TypeTuple,
 };
 
+#[deprecated(since="0.1.5", note="please use `rpc` instead")]
 #[proc_macro_attribute]
 pub fn jsonrpc_server(
     _: proc_macro::TokenStream,
