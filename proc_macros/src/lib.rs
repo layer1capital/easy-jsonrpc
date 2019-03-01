@@ -86,8 +86,8 @@ fn impl_client(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
         .collect::<Result<Vec<proc_macro2::TokenStream>, Rejections>>()?;
 
     Ok(quote! {
-        mod #mod_name {
-            use super::easy_jsonrpc::*;
+        pub mod #mod_name {
+            use super::easy_jsonrpc;
 
             #(#method_impls)*
         }
@@ -119,42 +119,20 @@ fn impl_client_method(method: &MethodSig) -> Result<proc_macro2::TokenStream, Re
     let return_typ = return_type(&method);
 
     Ok(quote! {
-        #[allow(non_camel_case_types)]
-        pub struct #method_name {
-            id: u64,
-        }
+        pub mod #method_name {
+            use super::easy_jsonrpc::*;
 
-        impl #method_name {
             // Creates an rpc call with a random id.
             pub fn call(
                 #(#fn_definition_args),*
-            ) -> Result<(Call<'static>, Self), ArgSerializeError> {
-                let mc = Call::call(#method_name_literal, vec![ #(#args_serialize),* ]);
-                let id = mc.id().unwrap(); // id is guaranteed not to be none
-                Ok((mc, Self { id }))
+            ) -> Result<(Call<'static>, Tracker<#return_typ>), ArgSerializeError> {
+                Ok(Call::call::<#return_typ>(#method_name_literal, vec![ #(#args_serialize),* ]))
             }
 
             pub fn notification(
                 #(#fn_definition_args),*
             ) -> Result<Call<'static>, ArgSerializeError> {
                 Ok(Call::notification(#method_name_literal, vec![ #(#args_serialize),* ]))
-            }
-
-            /// Get typed return value from server response.
-            /// If response contains the return value for this request, remove it from the
-            /// server response, attempt to interpret the return value as a typed value.
-            pub fn get_return(
-                &self,
-                response: &mut Response,
-            ) -> Result<#return_typ, ResponseFail> {
-                response
-                    .remove(self.id)
-                    .ok_or(ResponseFail::ResultNotFound)
-                    .and_then(|result| result.map_err(ResponseFail::RpcError))
-                    .and_then(|raw_return| {
-                        <#return_typ>::deserialize(&raw_return)
-                            .map_err(|_| ResponseFail::InvalidResponse)
-                    })
             }
         }
     })

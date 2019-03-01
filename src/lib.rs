@@ -128,7 +128,7 @@ pub use serde_json::{self, Value};
 use rand;
 use serde::ser::Serialize;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, marker::PhantomData};
 
 /// Handles jsonrpc calls.
 pub trait JSONRPCServer {
@@ -334,12 +334,23 @@ pub struct Call<'a> {
 impl<'a> Call<'a> {
     /// Create a jsonrpc method call with a random id.
     /// Id is guaranteed not to be None when using this constructor.
-    pub fn call(method: &'a str, args: Vec<Value>) -> Call {
-        Self {
-            method,
-            id: Some(rand::random::<u64>()),
-            args,
-        }
+    /// T is the expected return type of the method
+    pub fn call<T>(method: &'a str, args: Vec<Value>) -> (Call, Tracker<T>)
+    where
+        for<'de> T: Deserialize<'de>,
+    {
+        let id = rand::random::<u64>();
+        (
+            Self {
+                method,
+                id: Some(id),
+                args,
+            },
+            Tracker {
+                id,
+                _crappy_unused_parameter_workaround: PhantomData,
+            },
+        )
     }
 
     /// Create a jsonrpc method call with no id. Jsonrpc servers do not respond to notifications.
@@ -496,6 +507,30 @@ impl Response {
     /// Attempt to retrieve output from response. If there is a match, remove and return it.
     pub fn remove(&mut self, id: u64) -> Option<Result<Value, Error>> {
         self.outputs.remove(&id)
+    }
+}
+
+pub struct Tracker<T>
+where
+    for<'de> T: Deserialize<'de>,
+{
+    id: u64,
+    _crappy_unused_parameter_workaround: PhantomData<*const T>,
+}
+
+impl<T> Tracker<T>
+where
+    for<'de> T: Deserialize<'de>,
+{
+    /// Get typed return value from server response.
+    /// If response contains the return value for this request, remove it from the
+    /// server response and attempt to interpret it as a typed value.
+    pub fn get_return(&self, response: &mut Response) -> Result<T, ResponseFail> {
+        let result = response
+            .remove(self.id)
+            .ok_or(ResponseFail::ResultNotFound)?;
+        let raw_return = result.map_err(ResponseFail::RpcError)?;
+        serde_json::from_value(raw_return).map_err(|_| ResponseFail::InvalidResponse)
     }
 }
 
@@ -876,60 +911,37 @@ mod test {
         }
 
         mod adder {
-            use super::easy_jsonrpc::*;
+            use super::easy_jsonrpc;
 
-            #[allow(non_camel_case_types)]
-            pub struct checked_add {
-                id: u64,
-            }
+            pub mod checked_add {
+                use super::easy_jsonrpc::*;
 
-            impl checked_add {
                 // calls with random id
                 pub fn call(
                     arg0: usize,
                     arg1: usize,
-                ) -> Result<(Call<'static>, Self), ArgSerializeError> {
-                    let id = rand::random::<u64>();
-                    let mc = Call {
-                        id: Some(id),
-                        method: "checked_add",
-                        args: vec![
+                ) -> Result<(Call<'static>, Tracker<Option<usize>>), ArgSerializeError>
+                {
+                    Ok(Call::call(
+                        "checked_add",
+                        vec![
                             serde_json::to_value(arg0).map_err(|_| ArgSerializeError)?,
                             serde_json::to_value(arg1).map_err(|_| ArgSerializeError)?,
                         ],
-                    };
-                    Ok((mc, Self { id }))
+                    ))
                 }
 
                 pub fn notification(
                     arg0: usize,
                     arg1: usize,
                 ) -> Result<Call<'static>, ArgSerializeError> {
-                    Ok(Call {
-                        id: None,
-                        method: "checked_add",
-                        args: vec![
+                    Ok(Call::notification(
+                        "checked_add",
+                        vec![
                             serde_json::to_value(arg0).map_err(|_| ArgSerializeError)?,
                             serde_json::to_value(arg1).map_err(|_| ArgSerializeError)?,
                         ],
-                    })
-                }
-
-                /// Get typed return value from server response.
-                /// If response contains the return value for this request, remove it from the
-                /// server response, attempt to interpret the return value as a typed value.
-                pub fn get_return(
-                    &self,
-                    response: &mut Response,
-                ) -> Result<Option<usize>, ResponseFail> {
-                    response
-                        .remove(self.id)
-                        .ok_or(ResponseFail::ResultNotFound)
-                        .and_then(|result| result.map_err(ResponseFail::RpcError))
-                        .and_then(|raw_return| {
-                            <Option<usize>>::deserialize(&raw_return)
-                                .map_err(|_| ResponseFail::InvalidResponse)
-                        })
+                    ))
                 }
             }
         }
