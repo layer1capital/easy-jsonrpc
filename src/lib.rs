@@ -3,10 +3,12 @@
 
 Generates rpc handlers based on a trait definition.
 
-```
-use easy_jsonrpc::{self, JSONRPCServer};
 
-// the jsonrpc_server generates a JSONRPCServer for &dyn Adder
+```
+// Defining an api
+
+use easy_jsonrpc;
+
 #[easy_jsonrpc::rpc]
 pub trait Adder {
     fn checked_add(&self, a: isize, b: isize) -> Option<isize>;
@@ -14,6 +16,15 @@ pub trait Adder {
     fn is_some(&self, a: Option<usize>) -> bool;
     fn takes_ref(&self, rf: &isize);
 }
+
+
+// Server usage
+
+// The macro call above generated a JSONRPCServer implementation for &dyn Adder, so if we write an
+// an implementation of Adder, we can use it as a JSONRPCServer
+
+use easy_jsonrpc::JSONRPCServer;
+use serde_json::json;
 
 struct AdderImpl;
 
@@ -30,108 +41,72 @@ impl Adder for AdderImpl {
     fn takes_ref(&self, rf: &isize) {}
 }
 
-// create an rpc handler
-let adder = (&AdderImpl {} as &dyn Adder);
+let handler = (&AdderImpl {} as &dyn Adder);
 
 assert_eq!(
-    adder.handle_request(json!({
+    handler.handle_request(json!({
         "jsonrpc": "2.0",
         "method": "wrapping_add",
         "params": [1, 2],
         "id": 1
     })),
-    Some(r#"{"jsonrpc":"2.0","result":3,"id":1}"#.into())
+    Some(json!({
+        "jsonrpc": "2.0",
+        "result": 3,
+        "id": 1
+    }))
 );
 
-// Named arguments are handled automatically
+
+// Client usage
+
+let (call, tracker) = adder::checked_add::call(1, 2).unwrap();
+let json_response = handler.handle_request(call.into_request()).unwrap();
+let mut response = easy_jsonrpc::Response::from_raw(json_response).unwrap();
+assert_eq!(tracker.get_return(&mut response).unwrap(), Some(3));
+
+
+// Bonus bits
+
+// Named arguments are handled for free
 assert_eq!(
-    adder.handle_raw(
-        r#"{"jsonrpc": "2.0", "method": "wrapping_add", "params": {"a": 1, "b": 2}, "id": 1}"#
-    ),
-    Some(r#"{"jsonrpc":"2.0","result":3,"id":1}"#.into())
+    handler.handle_request(json!({
+        "jsonrpc": "2.0",
+        "method": "wrapping_add",
+        "params": {
+            "a": 1,
+            "b": 2
+        },
+        "id": 1
+    })),
+    Some(json!({
+        "jsonrpc": "2.0",
+        "result": 3,
+        "id": 1
+    }))
 );
 
-// Calls with no id are treated as notifications
+// Notifications (calls without an id) are handled sanely
 assert_eq!(
-    adder.handle_raw(r#"{"jsonrpc": "2.0", "method": "wrapping_add", "params": [1, 1]}"#),
+    handler.handle_request(json!({
+        "jsonrpc": "2.0",
+        "method": "wrapping_add",
+        "params": [1, 1]
+    })),
     None
 );
 
-// Calls with no return value return unit, aka `()` in rust, aka `null` in json
-assert_eq!(
-    adder.handle_raw(r#"{"jsonrpc": "2.0", "method": "takes_ref", "params": [1], "id": 1}"#),
-    Some(r#"{"jsonrpc":"2.0","result":null,"id":1}"#.into())
-);
-```
-
-Another example using handle_parsed instead of handle_raw.
-
-```
-use easy_jsonrpc::{self, JSONRPCServer};
-use jsonrpc_core::types::{
-    Call, Id, MethodCall, Params, Request, Response, Version, Output, Success,
-};
-use serde_json::json;
-
-#[easy_jsonrpc::jsonrpc_server]
-trait ExampleApi {
-    fn frob(&self, thing: Vec<bool>) -> Vec<Vec<bool>>;
-}
-
-impl ExampleApi for () {
-    fn frob(&self, thing: Vec<bool>) -> Vec<Vec<bool>> {
-        eprintln!("Initiate frobbing.");
-        vec![thing]
-    }
-}
-
-let rpc_handler = (&() as &dyn ExampleApi);
-
-let request = Request::Single(Call::MethodCall(MethodCall {
-    jsonrpc: Some(Version::V2),
-    method: "frob".into(),
-    params: Params::Array(vec![json!([false, false, true])]),
-    id: Id::Num(1),
-}));
-
-let response = Some(Response::Single(Output::Success(Success {
-    jsonrpc: Some(Version::V2),
-    result: json!([[false, false, true]]),
-    id: Id::Num(1),
-})));
-
-assert_eq!(rpc_handler.handle_parsed(request), response);
-```
-
-Easy JSON RPC also generates typed client helpers.
-
-```
-use easy_jsonrpc::{self, JSONRPCServer};
-use jsonrpc_core::types::*;
-
-#[easy_jsonrpc::rpc]
-trait Example {
-    fn greet(&self, name: String) -> String;
-}
-
-impl Example for () {
-    fn greet(&self, name: String) -> String {
-        format!("Hello, {}!", name)
-    }
-}
-
-let rpc_handler = &() as &dyn Example;
-
-let (call, reciever) = example::greet::call("Shane".to_owned()).unwrap();
-let request = Request::Single(Call::MethodCall(call));
-let raw_request = serde_json::to_string(&request).unwrap();
-let raw_response = rpc_handler.handle_raw(&raw_request).unwrap();
-let response: Response = serde_json::from_str(&raw_response).unwrap();
-let success = match response {
-    Response::Single(Output::Success(s)) => s,
-    _ => panic!(),
-};
-assert_eq!(&reciever.response(&success).unwrap(), "Hello, Shane!");
+// Batch calls are possible
+use easy_jsonrpc::Call;
+let (call0, tracker0) = adder::checked_add::call(0, 0).unwrap();
+let (call1, tracker1) = adder::checked_add::call(1, 0).unwrap();
+let (call2, tracker2) = adder::wrapping_add::call(1, 1).unwrap();
+let json_request = Call::into_batch_request(&[call0, call1, call2]);
+let json_response = handler.handle_request(json_request).unwrap();
+let mut response = easy_jsonrpc::Response::from_raw(json_response).unwrap();
+assert_eq!(tracker1.get_return(&mut response).unwrap(), Some(1));
+assert_eq!(tracker0.get_return(&mut response).unwrap(), Some(0));
+assert_eq!(tracker2.get_return(&mut response).unwrap(), 2);
 ```
 */
 
@@ -146,12 +121,11 @@ pub use jsonrpc_core::types::{
     self, Error, ErrorCode, Failure, Id, MethodCall, Notification, Output, Success, Version,
 };
 #[doc(hidden)]
-pub use rand;
-#[doc(hidden)]
 pub use serde::de::Deserialize;
 #[doc(hidden)]
 pub use serde_json::{self, Value};
 
+use rand;
 use serde::ser::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -358,6 +332,25 @@ pub struct Call<'a> {
 }
 
 impl<'a> Call<'a> {
+    /// Create a jsonrpc method call with a random id.
+    /// Id is guaranteed not to be None when using this constructor.
+    pub fn call(method: &'a str, args: Vec<Value>) -> Call {
+        Self {
+            method,
+            id: Some(rand::random::<u64>()),
+            args,
+        }
+    }
+
+    /// Create a jsonrpc method call with no id. Jsonrpc servers do not respond to notifications.
+    pub fn notification(method: &'a str, args: Vec<Value>) -> Call {
+        Self {
+            method,
+            id: None,
+            args,
+        }
+    }
+
     /// Convert call to a json object which can be serialized and sent to a jsonrpc server.
     pub fn into_request(&self) -> Value {
         let Self { method, id, args } = self;
@@ -378,7 +371,26 @@ impl<'a> Call<'a> {
 
     /// Convert list of calls to a json object which can be serialized and sent to a jsonrpc server.
     pub fn into_batch_request(calls: &[Self]) -> Value {
+        debug_assert!({
+            fn contains_duplicates(list: &[u64]) -> bool {
+                (1..list.len()).any(|i| list[i..].contains(&list[i - 1]))
+            }
+            let ids = calls.iter().filter_map(|call| call.id).collect::<Vec<_>>();
+            !contains_duplicates(ids.as_slice())
+        });
         Value::Array(calls.iter().map(Call::into_request).collect())
+    }
+
+    pub fn method(&self) -> &str {
+        self.method
+    }
+
+    pub fn id(&self) -> Option<u64> {
+        self.id
+    }
+
+    pub fn args(&self) -> &Vec<Value> {
+        &self.args
     }
 }
 
@@ -505,6 +517,7 @@ mod test {
         fn repeat_list(&self, lst: Vec<usize>) -> Vec<usize>;
         fn fail(&self) -> Result<isize, String>;
         fn succeed(&self) -> Result<isize, String>;
+        fn echo_ref(&self, a: &isize) -> isize;
     }
 
     struct AdderImpl;
@@ -536,6 +549,10 @@ mod test {
         fn succeed(&self) -> Result<isize, String> {
             Ok(1)
         }
+
+        fn echo_ref(&self, a: &isize) -> isize {
+            *a
+        }
     }
 
     fn assert_adder_response(request: Value, response: Value) {
@@ -561,6 +578,54 @@ mod test {
     }
 
     #[test]
+    fn batch() {
+        assert_adder_response(
+            json!([
+                {
+                    "jsonrpc": "2.0",
+                    "method": "wrapping_add",
+                    "params": [1, 1],
+                    "id": 1
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "wrapping_add",
+                    "params": [1, 2],
+                    "id": 2
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "wrapping_add",
+                    "params": [1, 3],
+                    "id": null
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "wrapping_add",
+                    "params": [1, 4],
+                },
+            ]),
+            json!([
+                {
+                    "jsonrpc": "2.0",
+                    "result": 2,
+                    "id": 1
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "result": 3,
+                    "id": 2
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "result": 4,
+                    "id": null
+                }
+            ]),
+        );
+    }
+
+    #[test]
     fn positional_args() {
         assert_adder_response(
             json!({
@@ -573,6 +638,36 @@ mod test {
                 "jsonrpc": "2.0",
                 "result": 2,
                 "id": 1
+            }),
+        );
+    }
+
+    #[test]
+    fn string_id() {
+        assert_adder_response(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "wrapping_add",
+                "params": [1, 1],
+                "id": "jfjfks sasdfk"
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "result": 2,
+                "id": "jfjfks sasdfk"
+            }),
+        );
+        assert_adder_response(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "wrapping_add",
+                "params": [1, 1],
+                "id": ""
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "result": 2,
+                "id": ""
             }),
         );
     }
@@ -874,25 +969,37 @@ mod test {
         assert_eq!(handler.handle_request(call.into_request()), None);
     }
 
-    #[test(skip)]
+    #[test]
     fn client_with_reference_args() {
-        #[easy_jsonrpc::rpc]
-        trait Adder {
-            fn checked_add(&self, a: usize, b: &usize) -> Option<usize> {
-                a.checked_add(*b)
-            }
-        }
+        let handler = &AdderImpl {} as &dyn Adder;
 
-        impl Adder for () {}
-        let handler = &() as &dyn Adder;
-
-        let (call, tracker) = adder::checked_add::call(1, &2).unwrap();
+        let (call, tracker) = adder::echo_ref::call(&2).unwrap();
         let raw_response = handler.handle_request(call.into_request()).unwrap();
         let mut response = easy_jsonrpc::Response::from_raw(raw_response).unwrap();
-        let result: Option<usize> = tracker.get_return(&mut response).unwrap();
-        assert_eq!(result, Some(3));
+        assert_eq!(tracker.get_return(&mut response).unwrap(), 2);
 
-        let call = adder::checked_add::notification(1, &2).unwrap();
+        let call = adder::echo_ref::notification(&2).unwrap();
         assert_eq!(handler.handle_request(call.into_request()), None);
+    }
+
+    #[test]
+    fn response_double_get() {
+        let handler = &AdderImpl as &dyn Adder;
+        use easy_jsonrpc::Call;
+        let (call0, tracker0) = adder::checked_add::call(0, 0).unwrap();
+        let (call1, tracker1) = adder::checked_add::call(1, 0).unwrap();
+        let (call2, tracker2) = adder::wrapping_add::call(1, 1).unwrap();
+        let json_request = Call::into_batch_request(&[call0, call1, call2]);
+        let json_response = handler.handle_request(json_request).unwrap();
+        let mut response = easy_jsonrpc::Response::from_raw(json_response).unwrap();
+        assert_eq!(tracker0.get_return(&mut response).unwrap(), Some(0));
+        assert_eq!(tracker2.get_return(&mut response).unwrap(), 2);
+
+        // get_return removes the returned return value
+        assert_eq!(tracker1.get_return(&mut response), Ok(Some(1)));
+        assert_eq!(
+            tracker1.get_return(&mut response),
+            Err(easy_jsonrpc::ResponseFail::ResultNotFound)
+        );
     }
 }

@@ -11,7 +11,7 @@ use syn::{
     FnDecl, Ident, ItemTrait, MethodSig, Pat, PatIdent, ReturnType, TraitItem, Type, TypeTuple,
 };
 
-#[deprecated(since="0.1.5", note="please use `rpc` instead")]
+#[deprecated(since = "0.1.5", note = "please use `rpc` instead")]
 #[proc_macro_attribute]
 pub fn jsonrpc_server(
     _: proc_macro::TokenStream,
@@ -125,31 +125,19 @@ fn impl_client_method(method: &MethodSig) -> Result<proc_macro2::TokenStream, Re
         }
 
         impl #method_name {
-            // calls with random id
+            // Creates an rpc call with a random id.
             pub fn call(
                 #(#fn_definition_args),*
             ) -> Result<(Call<'static>, Self), ArgSerializeError> {
-                let id = rand::random::<u64>();
-                let mc = Call {
-                    id: Some(id),
-                    method: #method_name_literal,
-                    args: vec![
-                        #(#args_serialize),*
-                    ],
-                };
+                let mc = Call::call(#method_name_literal, vec![ #(#args_serialize),* ]);
+                let id = mc.id().unwrap(); // id is guaranteed not to be none
                 Ok((mc, Self { id }))
             }
 
             pub fn notification(
                 #(#fn_definition_args),*
             ) -> Result<Call<'static>, ArgSerializeError> {
-                Ok(Call {
-                    id: None,
-                    method: #method_name_literal,
-                    args: vec![
-                        #(#args_serialize),*
-                    ],
-                })
+                Ok(Call::notification(#method_name_literal, vec![ #(#args_serialize),* ]))
             }
 
             /// Get typed return value from server response.
