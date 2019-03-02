@@ -1,10 +1,11 @@
-// Allow JSONRPCServer to be derived for a trait using the '#[jsonrpc_server]' macro.
+// Provides a Handler implementation for input trait
+// Provides client helpers for handler implementaion
 
 #![recursion_limit = "256"]
 
 extern crate proc_macro;
 use heck::SnakeCase;
-use proc_macro2::{self, Span};
+use proc_macro2::{self, Span, TokenStream};
 use quote::{quote, quote_spanned};
 use syn::{
     parse_macro_input, punctuated::Punctuated, spanned::Spanned, token::Paren, ArgSelfRef, FnArg,
@@ -25,6 +26,47 @@ pub fn jsonrpc_server(
     })
 }
 
+/// Generate a Handler implmentation for trait input.
+///
+/// Example usage:
+///
+/// ```rust,no_run
+/// #[rpc]
+/// trait MyApi {
+///     fn my_method(&self);
+///     fn my_other_method(&self) {}
+/// }
+/// ```
+///
+/// Generated code:
+///
+/// ```
+/// impl Handler for &dyn MyApi {
+///    ..
+/// }
+///
+/// pub mod my_api {
+///     pub mod my_method {
+///         fn call() -> Result<(Call<'static>, Tracker<()>), ArgSerializeError> {
+///             ..
+///         }
+///
+///         fn notification() -> Result<Call<'static>, ArgSerializeError>  {
+///             ..
+///         }
+///     }
+///
+///     pub mod my_other_method {
+///         fn call() -> Result<(Call<'static>, Tracker<()>), ArgSerializeError> {
+///             ..
+///         }
+///
+///         fn notification() -> Result<Call<'static>, ArgSerializeError>  {
+///             ..
+///         }
+///     }
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn rpc(_: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let trait_def = parse_macro_input!(item as ItemTrait);
@@ -38,15 +80,15 @@ pub fn rpc(_: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_ma
 }
 
 // if Ok, return token stream, else report error
-fn raise_if_err(res: Result<proc_macro2::TokenStream, Rejections>) -> proc_macro2::TokenStream {
+fn raise_if_err(res: Result<TokenStream, Rejections>) -> TokenStream {
     match res {
         Ok(stream) => stream,
         Err(rej) => rej.raise(),
     }
 }
 
-// generate a JSONRPCServer implementation for &dyn Trait
-fn impl_server(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
+// generate a Handler implementation for &dyn Trait
+fn impl_server(tr: &ItemTrait) -> Result<TokenStream, Rejections> {
     let trait_name = &tr.ident;
     let methods: Vec<&MethodSig> = trait_methods(&tr)?;
 
@@ -61,10 +103,10 @@ fn impl_server(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
             #try_serialize
         }})
     });
-    let handlers: Vec<proc_macro2::TokenStream> = partition(handlers)?;
+    let handlers: Vec<TokenStream> = partition(handlers)?;
 
     Ok(quote! {
-        impl easy_jsonrpc::JSONRPCServer for dyn #trait_name {
+        impl easy_jsonrpc::Handler for dyn #trait_name {
             fn handle(&self, method: &str, params: easy_jsonrpc::Params)
                       -> Result<easy_jsonrpc::Value, easy_jsonrpc::Error> {
                 match method {
@@ -76,14 +118,14 @@ fn impl_server(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
     })
 }
 
-fn impl_client(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
+fn impl_client(tr: &ItemTrait) -> Result<TokenStream, Rejections> {
     let trait_name = &tr.ident;
     let methods: Vec<&MethodSig> = trait_methods(&tr)?;
     let mod_name = Ident::new(&trait_name.to_string().to_snake_case(), Span::call_site());
     let method_impls = methods
         .iter()
         .map(|method| impl_client_method(*method))
-        .collect::<Result<Vec<proc_macro2::TokenStream>, Rejections>>()?;
+        .collect::<Result<Vec<TokenStream>, Rejections>>()?;
 
     Ok(quote! {
         pub mod #mod_name {
@@ -94,7 +136,7 @@ fn impl_client(tr: &ItemTrait) -> Result<proc_macro2::TokenStream, Rejections> {
     })
 }
 
-fn impl_client_method(method: &MethodSig) -> Result<proc_macro2::TokenStream, Rejections> {
+fn impl_client_method(method: &MethodSig) -> Result<TokenStream, Rejections> {
     let method_name = &method.ident;
     let method_name_literal = &method_name.to_string();
     let args = get_args(&method.decl)?;
@@ -177,10 +219,7 @@ fn trait_methods<'a>(tr: &'a ItemTrait) -> Result<Vec<&'a MethodSig>, Rejections
 }
 
 // generate code that parses rpc arguments and calls the given method
-fn add_handler(
-    trait_name: &Ident,
-    method: &MethodSig,
-) -> Result<proc_macro2::TokenStream, Rejections> {
+fn add_handler(trait_name: &Ident, method: &MethodSig) -> Result<TokenStream, Rejections> {
     let method_name = &method.ident;
     let args = get_args(&method.decl)?;
     let arg_name_literals = args.iter().map(|(id, _)| id.to_string());
@@ -316,7 +355,7 @@ struct Rejections {
 
 impl Rejections {
     // report all contained rejections
-    fn raise(self) -> proc_macro2::TokenStream {
+    fn raise(self) -> TokenStream {
         let Rejections { first, mut rest } = self;
         let first_err = first.raise();
         let rest_err = rest.drain(..).map(Rejection::raise);
@@ -342,7 +381,7 @@ impl Rejection {
     }
 
     // generate a compile_err!() from self
-    fn raise(self) -> proc_macro2::TokenStream {
+    fn raise(self) -> TokenStream {
         let description = match self.reason {
             Reason::FirstArgumentNotSelfRef => "First argument to jsonrpc method must be &self.",
             Reason::PatternMatchedArg => {
