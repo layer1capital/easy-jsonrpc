@@ -92,7 +92,7 @@ assert_eq!(
 # }
 # let handler = (&AdderImpl {} as &dyn Adder);
 let (call, tracker) = adder::checked_add::call(1, 2).unwrap();
-let json_response = handler.handle_request(call.into_request()).unwrap();
+let json_response = handler.handle_request(call.as_request()).unwrap();
 let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
 assert_eq!(tracker.get_return(&mut response).unwrap(), Some(3));
 ```
@@ -157,7 +157,7 @@ use easy_jsonrpc::Call;
 let (call0, tracker0) = adder::checked_add::call(0, 0).unwrap();
 let (call1, tracker1) = adder::checked_add::call(1, 0).unwrap();
 let (call2, tracker2) = adder::wrapping_add::call(1, 1).unwrap();
-let json_request = Call::into_batch_request(&[call0, call1, call2]);
+let json_request = Call::batch_request(&[call0, call1, call2]);
 let json_response = handler.handle_request(json_request).unwrap();
 let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
 assert_eq!(tracker1.get_return(&mut response).unwrap(), Some(1));
@@ -394,8 +394,8 @@ impl Params {
 // Intentionally does not implement Serialize; we don't want users to accidentally send a call by
 // itself. Does not implement clone because Vec<Value> is potentially expensive to clone.
 /// A single rpc method call with arguments. May be sent to the server by itself using
-/// [into_request](#method.into_request), or as a batch, using
-/// [into_batch_request](#method.into_batch_request).
+/// [as_request](#method.as_request), or as a batch, using
+/// [batch_request](#method.batch_request).
 #[derive(Debug)]
 pub struct Call<'a> {
     method: &'a str,
@@ -435,7 +435,7 @@ impl<'a> Call<'a> {
     }
 
     /// Convert call to a json object which can be serialized and sent to a jsonrpc server.
-    pub fn into_request(&self) -> Value {
+    pub fn as_request(&self) -> Value {
         let Self { method, id, args } = self;
         match id {
             Some(id) => json!({
@@ -453,7 +453,7 @@ impl<'a> Call<'a> {
     }
 
     /// Convert list of calls to a json object which can be serialized and sent to a jsonrpc server.
-    pub fn into_batch_request(calls: &[Self]) -> Value {
+    pub fn batch_request(calls: &[Self]) -> Value {
         debug_assert!({
             fn contains_duplicates(list: &[u64]) -> bool {
                 (1..list.len()).any(|i| list[i..].contains(&list[i - 1]))
@@ -461,7 +461,7 @@ impl<'a> Call<'a> {
             let ids = calls.iter().filter_map(|call| call.id).collect::<Vec<_>>();
             !contains_duplicates(ids.as_slice())
         });
-        Value::Array(calls.iter().map(Call::into_request).collect())
+        Value::Array(calls.iter().map(Call::as_request).collect())
     }
 }
 
@@ -554,10 +554,7 @@ impl Response {
                             id: Id::Num(id),
                             ..
                         }) => Ok((id, Err(error))),
-                        Output::Success(Success { id: _, .. })
-                        | Output::Failure(Failure { id: _, .. }) => {
-                            Err(InvalidResponse::ContainsNonNumericId)
-                        }
+                        _ => Err(InvalidResponse::ContainsNonNumericId),
                     }
                 },
             )
@@ -1013,13 +1010,13 @@ mod test {
         let handler = &() as &dyn Adder;
 
         let (call, tracker) = adder::checked_add::call(1, 2).unwrap();
-        let raw_response = handler.handle_request(call.into_request()).unwrap();
+        let raw_response = handler.handle_request(call.as_request()).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         let result: Option<usize> = tracker.get_return(&mut response).unwrap();
         assert_eq!(result, Some(3));
 
         let call = adder::checked_add::notification(1, 2).unwrap();
-        assert_eq!(handler.handle_request(call.into_request()), None);
+        assert_eq!(handler.handle_request(call.as_request()), None);
     }
 
     #[test]
@@ -1035,13 +1032,13 @@ mod test {
         let handler = &() as &dyn Adder;
 
         let (call, tracker) = adder::checked_add::call(1, 2).unwrap();
-        let raw_response = handler.handle_request(call.into_request()).unwrap();
+        let raw_response = handler.handle_request(call.as_request()).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         let result: Option<usize> = tracker.get_return(&mut response).unwrap();
         assert_eq!(result, Some(3));
 
         let call = adder::checked_add::notification(1, 2).unwrap();
-        assert_eq!(handler.handle_request(call.into_request()), None);
+        assert_eq!(handler.handle_request(call.as_request()), None);
     }
 
     #[test]
@@ -1049,12 +1046,12 @@ mod test {
         let handler = &AdderImpl {} as &dyn Adder;
 
         let (call, tracker) = adder::echo_ref::call(&2).unwrap();
-        let raw_response = handler.handle_request(call.into_request()).unwrap();
+        let raw_response = handler.handle_request(call.as_request()).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         assert_eq!(tracker.get_return(&mut response).unwrap(), 2);
 
         let call = adder::echo_ref::notification(&2).unwrap();
-        assert_eq!(handler.handle_request(call.into_request()), None);
+        assert_eq!(handler.handle_request(call.as_request()), None);
     }
 
     #[test]
@@ -1064,7 +1061,7 @@ mod test {
         let (call0, tracker0) = adder::checked_add::call(0, 0).unwrap();
         let (call1, tracker1) = adder::checked_add::call(1, 0).unwrap();
         let (call2, tracker2) = adder::wrapping_add::call(1, 1).unwrap();
-        let json_request = Call::into_batch_request(&[call0, call1, call2]);
+        let json_request = Call::batch_request(&[call0, call1, call2]);
         let json_response = handler.handle_request(json_request).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
         assert_eq!(tracker0.get_return(&mut response).unwrap(), Some(0));
