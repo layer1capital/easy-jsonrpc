@@ -1,8 +1,10 @@
 [package]
 name = "easy-jsonrpc"
-description = "generate jsonrpc handlers from trait definitions"
+description = """
+Convert a trait definition into a jsonrpc api.
+"""
 repository = "https://github.com/layer1capital/easy-jsonrpc"
-version = "0.1.4"
+version = "0.2.0"
 authors = ["Andrew Dirksen <andrew@dirksen.com>"]
 license = "Apache-2.0"
 documentation = "https://docs.rs/easy-jsonrpc"
@@ -11,7 +13,7 @@ readme = "readme.md"
 keywords = ["json", "rpc", "macro", "client", "server"]
 
 [dependencies]
-easy-jsonrpc-proc-macro = { path = "./proc_macros", version = "0.1.4" }
+easy-jsonrpc-proc-macro = { path = "./proc_macros", version = "0.2.0" }
 serde_json = "1"
 serde = "1"
 jsonrpc-core = "10.0.1"
