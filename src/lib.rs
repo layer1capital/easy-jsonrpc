@@ -5,7 +5,7 @@ Generates rpc handlers based on a trait definition.
 
 ## Defining an api
 
-```
+```rust
 use easy_jsonrpc;
 
 #[easy_jsonrpc::rpc]
@@ -25,7 +25,7 @@ The rpc macro generates
 
 ## Server side usage
 
-```
+```rust
 # use easy_jsonrpc;
 # #[easy_jsonrpc::rpc]
 # pub trait Adder {
@@ -66,7 +66,7 @@ assert_eq!(
 
 ## Client side usage
 
-```
+```rust
 # use easy_jsonrpc;
 # #[easy_jsonrpc::rpc]
 # pub trait Adder {
@@ -91,7 +91,8 @@ assert_eq!(
 #    fn takes_ref(&self, rf: &isize) {}
 # }
 # let handler = (&AdderImpl {} as &dyn Adder);
-let (call, tracker) = adder::checked_add::call(1, 2).unwrap();
+let bind = adder::checked_add(1, 2).unwrap();
+let (call, tracker) = bind.call();
 let json_response = handler.handle_request(call.as_request()).unwrap();
 let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
 assert_eq!(tracker.get_return(&mut response).unwrap(), Some(3));
@@ -99,7 +100,7 @@ assert_eq!(tracker.get_return(&mut response).unwrap(), Some(3));
 
 ## Bonus bits
 
-```
+```rust
 # use easy_jsonrpc;
 # #[easy_jsonrpc::rpc]
 # pub trait Adder {
@@ -154,9 +155,12 @@ assert_eq!(
 
 // Batch calls are possible
 use easy_jsonrpc::Call;
-let (call0, tracker0) = adder::checked_add::call(0, 0).unwrap();
-let (call1, tracker1) = adder::checked_add::call(1, 0).unwrap();
-let (call2, tracker2) = adder::wrapping_add::call(1, 1).unwrap();
+let bind0 = adder::checked_add(0, 0).unwrap();
+let (call0, tracker0) = bind0.call();
+let bind1 = adder::checked_add(1, 0).unwrap();
+let (call1, tracker1) = bind1.call();
+let bind2 = adder::wrapping_add(1, 1).unwrap();
+let (call2, tracker2) = bind2.call();
 let json_request = Call::batch_request(&[call0, call1, call2]);
 let json_response = handler.handle_request(json_request).unwrap();
 let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
@@ -179,7 +183,7 @@ pub use jsonrpc_core::types::{
     self, Error, ErrorCode, Failure, Id, MethodCall, Notification, Output, Success, Version,
 };
 #[doc(hidden)]
-pub use serde::de::Deserialize;
+use serde::de::Deserialize;
 #[doc(hidden)]
 pub use serde_json::{self, Value};
 
@@ -188,7 +192,7 @@ use serde::ser::Serialize;
 use serde_json::json;
 use std::{collections::BTreeMap, marker::PhantomData};
 
-/// Handles jsonrpc calls.
+/// Handles jsonrpc requests.
 pub trait Handler {
     /// Type-check params and call method if method exists. This method is implemented automatically
     /// by the [rpc](../easy_jsonrpc_proc_macro/attr.rpc.html) macro.
@@ -393,29 +397,45 @@ impl Params {
 
 // Intentionally does not implement Serialize; we don't want users to accidentally send a call by
 // itself. Does not implement clone because Vec<Value> is potentially expensive to clone.
-/// A single rpc method call with arguments. May be sent to the server by itself using
-/// [as_request](#method.as_request), or as a batch, using
-/// [batch_request](#method.batch_request).
+/// Create a binding of arguments to a method name. Can be turned into either a jsonrpc call using
+/// [call](#method.call), or a jsonrpc notification using [notification](#method.notification).
 #[derive(Debug)]
-pub struct Call<'a> {
+pub struct BoundMethod<'a, T>
+where
+    for<'de> T: Deserialize<'de>,
+{
     method: &'a str,
-    id: Option<u64>, // None indicates a notification
     args: Vec<Value>,
+    _spook: PhantomData<*const T>,
 }
 
-impl<'a> Call<'a> {
-    /// Create a jsonrpc method call with a random id.
-    /// T is the expected return type of the method.
-    pub fn call<T>(method: &'a str, args: Vec<Value>) -> (Call, Tracker<T>)
+impl<'a, T> BoundMethod<'a, T>
+where
+    for<'de> T: Deserialize<'de>,
+{
+    /// Create a binding of arguments to a method name.
+    /// You probably don't want to use this method directly.
+    /// Try using the rpc macro instead.
+    pub fn new(method: &'a str, args: Vec<Value>) -> BoundMethod<T> {
+        BoundMethod {
+            method,
+            args,
+            _spook: PhantomData,
+        }
+    }
+
+    /// Create a jsonrpc method call with a random id and a tracker for retrieving the return value.
+    pub fn call(&'a self) -> (Call<'a>, Tracker<T>)
     where
         for<'de> T: Deserialize<'de>,
     {
+        let Self { method, args, .. } = self;
         let id = rand::random::<u64>();
         (
-            Self {
+            Call {
                 method,
-                id: Some(id),
                 args,
+                id: Some(id),
             },
             Tracker {
                 id,
@@ -426,14 +446,28 @@ impl<'a> Call<'a> {
 
     /// Create a jsonrpc method call with no id. Jsonrpc servers accept notifications silently.
     /// That is to say, they handle the notification, but send to reasponse.
-    pub fn notification(method: &'a str, args: Vec<Value>) -> Call {
-        Self {
+    pub fn notification(&'a self) -> Call<'a> {
+        let Self { method, args, .. } = self;
+        Call {
             method,
-            id: None,
             args,
+            id: None,
         }
     }
+}
 
+// Intentionally does not implement Serialize; we don't want users to accidentally send a call by
+// itself. Does not implement clone because Vec<Value> is potentially expensive to clone.
+/// A single rpc method call with arguments. May be sent to the server by itself using
+/// [as_request](#method.as_request), or as a batch, using
+/// [batch_request](#method.batch_request).
+pub struct Call<'a> {
+    method: &'a str,
+    args: &'a [Value],
+    id: Option<u64>,
+}
+
+impl<'a> Call<'a> {
     /// Convert call to a json object which can be serialized and sent to a jsonrpc server.
     pub fn as_request(&self) -> Value {
         let Self { method, id, args } = self;
@@ -970,53 +1004,45 @@ mod test {
             }
         }
 
-        mod adder {
-            use super::easy_jsonrpc;
-
-            pub mod checked_add {
-                use super::easy_jsonrpc::*;
-
-                // calls with random id
-                pub fn call(
-                    arg0: usize,
-                    arg1: usize,
-                ) -> Result<(Call<'static>, Tracker<Option<usize>>), ArgSerializeError>
-                {
-                    Ok(Call::call(
-                        "checked_add",
-                        vec![
-                            serde_json::to_value(arg0).map_err(|_| ArgSerializeError)?,
-                            serde_json::to_value(arg1).map_err(|_| ArgSerializeError)?,
-                        ],
-                    ))
-                }
-
-                pub fn notification(
-                    arg0: usize,
-                    arg1: usize,
-                ) -> Result<Call<'static>, ArgSerializeError> {
-                    Ok(Call::notification(
-                        "checked_add",
-                        vec![
-                            serde_json::to_value(arg0).map_err(|_| ArgSerializeError)?,
-                            serde_json::to_value(arg1).map_err(|_| ArgSerializeError)?,
-                        ],
-                    ))
-                }
+        #[allow(non_camel_case_types)]
+        pub enum adder {}
+        impl adder {
+            fn checked_add(
+                arg0: usize,
+                arg1: usize,
+            ) -> Result<
+                easy_jsonrpc::BoundMethod<'static, Option<usize>>,
+                easy_jsonrpc::ArgSerializeError,
+            > {
+                Ok(easy_jsonrpc::BoundMethod::new(
+                    "checked_add",
+                    vec![
+                        serde_json::to_value(arg0).map_err(|_| easy_jsonrpc::ArgSerializeError)?,
+                        serde_json::to_value(arg1).map_err(|_| easy_jsonrpc::ArgSerializeError)?,
+                    ],
+                ))
             }
         }
 
         impl Adder for () {}
         let handler = &() as &dyn Adder;
 
-        let (call, tracker) = adder::checked_add::call(1, 2).unwrap();
+        let bind = adder::checked_add(1, 2).unwrap();
+        let (call, tracker) = bind.call();
         let raw_response = handler.handle_request(call.as_request()).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         let result: Option<usize> = tracker.get_return(&mut response).unwrap();
         assert_eq!(result, Some(3));
 
-        let call = adder::checked_add::notification(1, 2).unwrap();
-        assert_eq!(handler.handle_request(call.as_request()), None);
+        assert_eq!(
+            handler.handle_request(
+                adder::checked_add(1, 2)
+                    .unwrap()
+                    .notification()
+                    .as_request()
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1031,36 +1057,47 @@ mod test {
         impl Adder for () {}
         let handler = &() as &dyn Adder;
 
-        let (call, tracker) = adder::checked_add::call(1, 2).unwrap();
+        let bind = adder::checked_add(1, 2).unwrap();
+        let (call, tracker) = bind.call();
         let raw_response = handler.handle_request(call.as_request()).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         let result: Option<usize> = tracker.get_return(&mut response).unwrap();
         assert_eq!(result, Some(3));
 
-        let call = adder::checked_add::notification(1, 2).unwrap();
-        assert_eq!(handler.handle_request(call.as_request()), None);
+        let call = adder::checked_add(1, 2).unwrap();
+        assert_eq!(
+            handler.handle_request(call.notification().as_request()),
+            None
+        );
     }
 
     #[test]
     fn client_with_reference_args() {
         let handler = &AdderImpl {} as &dyn Adder;
 
-        let (call, tracker) = adder::echo_ref::call(&2).unwrap();
+        let bind = adder::echo_ref(&2).unwrap();
+        let (call, tracker) = bind.call();
         let raw_response = handler.handle_request(call.as_request()).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         assert_eq!(tracker.get_return(&mut response).unwrap(), 2);
 
-        let call = adder::echo_ref::notification(&2).unwrap();
-        assert_eq!(handler.handle_request(call.as_request()), None);
+        let call = adder::echo_ref(&2).unwrap();
+        assert_eq!(
+            handler.handle_request(call.notification().as_request()),
+            None
+        );
     }
 
     #[test]
     fn response_double_get() {
         let handler = &AdderImpl as &dyn Adder;
         use easy_jsonrpc::Call;
-        let (call0, tracker0) = adder::checked_add::call(0, 0).unwrap();
-        let (call1, tracker1) = adder::checked_add::call(1, 0).unwrap();
-        let (call2, tracker2) = adder::wrapping_add::call(1, 1).unwrap();
+        let bind0 = adder::checked_add(0, 0).unwrap();
+        let (call0, tracker0) = bind0.call();
+        let bind1 = adder::checked_add(1, 0).unwrap();
+        let (call1, tracker1) = bind1.call();
+        let bind2 = adder::wrapping_add(1, 1).unwrap();
+        let (call2, tracker2) = bind2.call();
         let json_request = Call::batch_request(&[call0, call1, call2]);
         let json_response = handler.handle_request(json_request).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
@@ -1073,5 +1110,17 @@ mod test {
             tracker1.get_return(&mut response),
             Err(easy_jsonrpc::ResponseFail::ResultNotFound)
         );
+    }
+
+    #[test]
+    fn local_types() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub struct Foo;
+
+        #[easy_jsonrpc::rpc]
+        trait Bar {
+            fn frob(&self) -> Foo;
+            fn borf(&self, foo: Foo);
+        }
     }
 }

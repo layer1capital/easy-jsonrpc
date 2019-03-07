@@ -12,6 +12,7 @@ use syn::{
     FnDecl, Ident, ItemTrait, MethodSig, Pat, PatIdent, ReturnType, TraitItem, Type, TypeTuple,
 };
 
+/// Generate a Handler implmentation and for trait input.
 #[deprecated(since = "0.1.5", note = "please use `rpc` instead")]
 #[proc_macro_attribute]
 pub fn jsonrpc_server(
@@ -26,15 +27,15 @@ pub fn jsonrpc_server(
     })
 }
 
-/// Generate a Handler implmentation for trait input.
+/// Generate a Handler implementation and client helpers for trait input.
 ///
 /// Example usage:
 ///
 /// ```rust,no_run
 /// #[rpc]
 /// trait MyApi {
-///     fn my_method(&self);
-///     fn my_other_method(&self) {}
+///     fn my_method(&self, a: usize);
+///     fn my_other_method(&self) -> bool {}
 /// }
 /// ```
 ///
@@ -45,25 +46,15 @@ pub fn jsonrpc_server(
 ///    ..
 /// }
 ///
-/// pub mod my_api {
-///     pub mod my_method {
-///         fn call() -> Result<(Call<'static>, Tracker<()>), ArgSerializeError> {
-///             ..
-///         }
+/// pub enum my_api {}
 ///
-///         fn notification() -> Result<Call<'static>, ArgSerializeError>  {
-///             ..
-///         }
+/// impl my_api {
+///     fn my_method(arg0: usize) -> Result<BoundMethod<'static, ()>, ArgSerializeError> {
+///          ..
 ///     }
 ///
-///     pub mod my_other_method {
-///         fn call() -> Result<(Call<'static>, Tracker<()>), ArgSerializeError> {
-///             ..
-///         }
-///
-///         fn notification() -> Result<Call<'static>, ArgSerializeError>  {
-///             ..
-///         }
+///     fn my_other_method() -> Result<BoundMethod<'static, bool>, ArgSerializeError> {
+///          ..
 ///     }
 /// }
 /// ```
@@ -96,8 +87,10 @@ fn impl_server(tr: &ItemTrait) -> Result<TokenStream, Rejections> {
         let method_literal = method.ident.to_string();
         let method_return_type_span = return_type_span(&method);
         let handler = add_handler(trait_name, method)?;
-        let try_serialize = quote_spanned! {method_return_type_span =>
-        easy_jsonrpc::try_serialize(&result)};
+        let try_serialize = quote_spanned! {
+            method_return_type_span =>
+                easy_jsonrpc::try_serialize(&result)
+        };
         Ok(quote! { #method_literal => {
             let result = #handler;
             #try_serialize
@@ -128,9 +121,10 @@ fn impl_client(tr: &ItemTrait) -> Result<TokenStream, Rejections> {
         .collect::<Result<Vec<TokenStream>, Rejections>>()?;
 
     Ok(quote! {
-        pub mod #mod_name {
-            use super::easy_jsonrpc;
-
+        // We originally used "mod" here. The problem was that modules can't access the
+        // namespace of their parent if their parent is a fn.
+        pub enum #mod_name {}
+        impl #mod_name {
             #(#method_impls)*
         }
     })
@@ -154,28 +148,19 @@ fn impl_client_method(method: &MethodSig) -> Result<TokenStream, Rejections> {
         .map(|(i, (name, _))| {
             let arg_num_name = Ident::new(&format!("arg{}", i), name.span());
             quote! {
-                serde_json::to_value(#arg_num_name).map_err(|_| ArgSerializeError)?
+                easy_jsonrpc::serde_json::to_value(#arg_num_name).map_err(|_| easy_jsonrpc::ArgSerializeError)?
             }
         })
         .collect();
     let return_typ = return_type(&method);
 
     Ok(quote! {
-        pub mod #method_name {
-            use super::easy_jsonrpc::*;
-
-            // Creates an rpc call with a random id.
-            pub fn call(
-                #(#fn_definition_args),*
-            ) -> Result<(Call<'static>, Tracker<#return_typ>), ArgSerializeError> {
-                Ok(Call::call::<#return_typ>(#method_name_literal, vec![ #(#args_serialize),* ]))
-            }
-
-            pub fn notification(
-                #(#fn_definition_args),*
-            ) -> Result<Call<'static>, ArgSerializeError> {
-                Ok(Call::notification(#method_name_literal, vec![ #(#args_serialize),* ]))
-            }
+        pub fn #method_name ( #(#fn_definition_args,)* )
+                                 -> Result<easy_jsonrpc::BoundMethod<'static, #return_typ>, easy_jsonrpc::ArgSerializeError> {
+            Ok(easy_jsonrpc::BoundMethod::new(
+                #method_name_literal,
+                vec![ #(#args_serialize),* ],
+            ))
         }
     })
 }
