@@ -402,7 +402,7 @@ impl Params {
 #[derive(Debug)]
 pub struct BoundMethod<'a, T>
 where
-    for<'de> T: Deserialize<'de>,
+    T: Deserialize<'static>,
 {
     method: &'a str,
     args: Vec<Value>,
@@ -411,7 +411,7 @@ where
 
 impl<'a, T> BoundMethod<'a, T>
 where
-    for<'de> T: Deserialize<'de>,
+    T: Deserialize<'static>,
 {
     /// Create a binding of arguments to a method name.
     /// You probably don't want to use this method directly.
@@ -427,7 +427,7 @@ where
     /// Create a jsonrpc method call with a random id and a tracker for retrieving the return value.
     pub fn call(&'a self) -> (Call<'a>, Tracker<T>)
     where
-        for<'de> T: Deserialize<'de>,
+        T: Deserialize<'static>,
     {
         let Self { method, args, .. } = self;
         let id = rand::random::<u64>();
@@ -606,7 +606,7 @@ impl Response {
 /// Trackers can be used to get a typed return value from a json response.
 pub struct Tracker<T>
 where
-    for<'de> T: Deserialize<'de>,
+    T: Deserialize<'static>,
 {
     id: u64,
     _spook: PhantomData<*const T>,
@@ -614,7 +614,7 @@ where
 
 impl<T> Tracker<T>
 where
-    for<'de> T: Deserialize<'de>,
+    T: Deserialize<'static>,
 {
     /// Get typed return value from server response.
     /// If response contains the return value for this request, remove it from the
@@ -624,7 +624,7 @@ where
             .remove(self.id)
             .ok_or(ResponseFail::ResultNotFound)?;
         let raw_return = result.map_err(ResponseFail::RpcError)?;
-        serde_json::from_value(raw_return).map_err(|_| ResponseFail::InvalidResponse)
+        <T>::deserialize(raw_return).map_err(|_| ResponseFail::InvalidResponse)
     }
 }
 
