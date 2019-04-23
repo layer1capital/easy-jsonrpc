@@ -2,7 +2,7 @@
 
 # Easy JSON RPC
 
-Generate a jsonrpc handler and client helpers from a trait definition. [docs](https://docs.rs/easy-jsonrpc)
+Generates an rpc handler and client helpers based on a trait definition. [docs](https://docs.rs/easy-jsonrpc)
 
 ## Defining an api
 
@@ -27,7 +27,7 @@ The rpc macro generates
 ## Server side usage
 
 ```rust
-use easy_jsonrpc::Handler;
+use easy_jsonrpc::{Handler, MaybeReply};
 use serde_json::json;
 
 struct AdderImpl;
@@ -47,7 +47,7 @@ assert_eq!(
         "params": [1, 2],
         "id": 1
     })),
-    Some(json!({
+    MaybeReply::Reply(json!({
         "jsonrpc": "2.0",
         "result": 3,
         "id": 1
@@ -60,7 +60,10 @@ assert_eq!(
 ```rust
 let bind = adder::checked_add(1, 2).unwrap();
 let (call, tracker) = bind.call();
-let json_response = handler.handle_request(call.as_request()).unwrap();
+let json_response = match handler.handle_request(call.as_request()) {
+   MaybeReply::Reply(resp) => resp,
+   MaybeReply::DontReply => panic!(),
+};
 let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
 assert_eq!(tracker.get_return(&mut response).unwrap(), Some(3));
 ```
@@ -80,7 +83,7 @@ assert_eq!(
         },
         "id": 1
     })),
-    Some(json!({
+    MaybeReply::Reply(json!({
         "jsonrpc": "2.0",
         "result": 3,
         "id": 1
@@ -97,11 +100,18 @@ assert_eq!(
         "method": "wrapping_add",
         "params": [1, 1]
     })),
-    None
+    MaybeReply::DontReply
 );
+
+Notification are easy to generate.
+
+```rust
+let bind = adder::checked_add(0, 0).unwrap();
+let notification = bind.notification().as_request();
+assert_eq!(handler.handle_request(notification), MaybeReply::DontReply);
 ```
 
-Batch calls are possible
+Batch calls are possible.
 
 ```rust
 use easy_jsonrpc::Call;
@@ -111,8 +121,13 @@ let bind1 = adder::checked_add(1, 0).unwrap();
 let (call1, tracker1) = bind1.call();
 let bind2 = adder::wrapping_add(1, 1).unwrap();
 let (call2, tracker2) = bind2.call();
-let json_request = Call::batch_request(&[call0, call1, call2]);
-let json_response = handler.handle_request(json_request).unwrap();
+let bind3 = adder::wrapping_add(1, 1).unwrap();
+let call3 = bind3.notification();
+let json_request = Call::batch_request(&[call0, call1, call2, call3]);
+let json_response = match handler.handle_request(json_request) {
+   MaybeReply::Reply(resp) => resp,
+   MaybeReply::DontReply => panic!(),
+};
 let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
 assert_eq!(tracker1.get_return(&mut response).unwrap(), Some(1));
 assert_eq!(tracker0.get_return(&mut response).unwrap(), Some(0));
