@@ -102,6 +102,7 @@ assert_eq!(
     })),
     MaybeReply::DontReply
 );
+```
 
 Notification are easy to generate.
 
