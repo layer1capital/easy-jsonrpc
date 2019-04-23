@@ -36,7 +36,7 @@ The rpc macro generates
 #     }
 #     fn takes_ref(&self, rf: &isize);
 # }
-use easy_jsonrpc::Handler;
+use easy_jsonrpc::{Handler, MaybeReply};
 use serde_json::json;
 
 struct AdderImpl;
@@ -56,7 +56,7 @@ assert_eq!(
         "params": [1, 2],
         "id": 1
     })),
-    Some(json!({
+    MaybeReply::Reply(json!({
         "jsonrpc": "2.0",
         "result": 3,
         "id": 1
@@ -75,7 +75,7 @@ assert_eq!(
 #     fn is_some(&self, a: Option<usize>) -> bool;
 #     fn takes_ref(&self, rf: &isize);
 # }
-# use easy_jsonrpc::Handler;
+# use easy_jsonrpc::{Handler, MaybeReply};
 # use serde_json::json;
 # struct AdderImpl;
 # impl Adder for AdderImpl {
@@ -93,7 +93,10 @@ assert_eq!(
 # let handler = (&AdderImpl {} as &dyn Adder);
 let bind = adder::checked_add(1, 2).unwrap();
 let (call, tracker) = bind.call();
-let json_response = handler.handle_request(call.as_request()).unwrap();
+let json_response = match handler.handle_request(call.as_request()) {
+   MaybeReply::Reply(resp) => resp,
+   MaybeReply::DontReply => panic!(),
+};
 let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
 assert_eq!(tracker.get_return(&mut response).unwrap(), Some(3));
 ```
@@ -109,7 +112,7 @@ assert_eq!(tracker.get_return(&mut response).unwrap(), Some(3));
 #     fn is_some(&self, a: Option<usize>) -> bool;
 #     fn takes_ref(&self, rf: &isize);
 # }
-# use easy_jsonrpc::Handler;
+# use easy_jsonrpc::{Handler, MaybeReply};
 # use serde_json::json;
 # struct AdderImpl;
 # impl Adder for AdderImpl {
@@ -136,7 +139,7 @@ assert_eq!(
         },
         "id": 1
     })),
-    Some(json!({
+    MaybeReply::Reply(json!({
         "jsonrpc": "2.0",
         "result": 3,
         "id": 1
@@ -150,8 +153,13 @@ assert_eq!(
         "method": "wrapping_add",
         "params": [1, 1]
     })),
-    None
+    MaybeReply::DontReply
 );
+
+// Notification are easy to generate
+let bind = adder::checked_add(0, 0).unwrap();
+let notification = bind.notification().as_request();
+assert_eq!(handler.handle_request(notification), MaybeReply::DontReply);
 
 // Batch calls are possible
 use easy_jsonrpc::Call;
@@ -161,8 +169,13 @@ let bind1 = adder::checked_add(1, 0).unwrap();
 let (call1, tracker1) = bind1.call();
 let bind2 = adder::wrapping_add(1, 1).unwrap();
 let (call2, tracker2) = bind2.call();
-let json_request = Call::batch_request(&[call0, call1, call2]);
-let json_response = handler.handle_request(json_request).unwrap();
+let bind3 = adder::wrapping_add(1, 1).unwrap();
+let call3 = bind3.notification();
+let json_request = Call::batch_request(&[call0, call1, call2, call3]);
+let json_response = match handler.handle_request(json_request) {
+   MaybeReply::Reply(resp) => resp,
+   MaybeReply::DontReply => panic!(),
+};
 let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
 assert_eq!(tracker1.get_return(&mut response).unwrap(), Some(1));
 assert_eq!(tracker0.get_return(&mut response).unwrap(), Some(0));
@@ -198,15 +211,11 @@ pub trait Handler {
     fn handle(&self, method: &str, params: Params) -> Result<Value, jsonrpc_core::Error>;
 
     /// Parses raw_request as a jsonrpc request, handles request according to the jsonrpc spec.
-    /// As per the spec, requests consisting of only notifications recieve no response. A lack of
-    /// response is represented as None. Any response which should be returned to the client
-    /// is represented as Some(value), where value can be directy serialized and sent as a
-    /// response.
-    fn handle_request(&self, raw_request: serde_json::Value) -> Option<Value> {
+    fn handle_request(&self, raw_request: Value) -> MaybeReply {
         let request: jsonrpc_core::Request = match serde_json::from_value(raw_request) {
             Ok(request) => request,
             Err(_) => {
-                return Some(serde_json::json!({
+                return MaybeReply::Reply(serde_json::json!({
                     "jsonrpc": "2.0",
                     "error": {
                         "code": -32700,
@@ -216,8 +225,11 @@ pub trait Handler {
                 }));
             }
         };
-        let response = handle_parsed_request(self, request)?;
-        Some(serde_json::to_value(response).unwrap_or_else(|e| {
+        let response = match handle_parsed_request(self, request) {
+            Some(ret) => ret,
+            None => return MaybeReply::DontReply,
+        };
+        MaybeReply::Reply(serde_json::to_value(response).unwrap_or_else(|e| {
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "error": {
@@ -228,6 +240,25 @@ pub trait Handler {
                 "id": null
             })
         }))
+    }
+}
+
+/// Returned by Handler::handle_request
+#[derive(Clone, PartialEq, Debug)]
+pub enum MaybeReply {
+    /// The value should be serialized and returned to the client.
+    Reply(Value),
+    /// The request consisted solely of notifications. No reply is necessary.
+    DontReply,
+}
+
+impl MaybeReply {
+    /// Convert to optional value.
+    pub fn as_option(self) -> Option<Value> {
+        match self {
+            MaybeReply::Reply(val) => Some(val),
+            MaybeReply::DontReply => None,
+        }
     }
 }
 
@@ -634,7 +665,7 @@ mod test {
     mod easy_jsonrpc {
         pub use crate::*;
     }
-    use super::Handler;
+    use super::{Handler, MaybeReply};
     use jsonrpc_core;
     use serde_json::{json, Value};
 
@@ -689,6 +720,7 @@ mod test {
         assert_eq!(
             (&AdderImpl {} as &dyn Adder)
                 .handle_request(request)
+                .as_option()
                 .unwrap(),
             response
         );
@@ -697,6 +729,7 @@ mod test {
     fn error_code(request: Value) -> jsonrpc_core::ErrorCode {
         let raw_response = (&AdderImpl {} as &dyn Adder)
             .handle_request(request)
+            .as_option()
             .unwrap();
         let response: jsonrpc_core::Response = serde_json::from_value(raw_response).unwrap();
         match response {
@@ -993,7 +1026,10 @@ mod test {
             "method": "succeed",
             "params": []
         });
-        assert_eq!((&AdderImpl {} as &dyn Adder).handle_request(request), None);
+        assert_eq!(
+            (&AdderImpl {} as &dyn Adder).handle_request(request),
+            MaybeReply::DontReply
+        );
     }
 
     #[test]
@@ -1030,7 +1066,10 @@ mod test {
 
         let bind = adder_client::checked_add(1, 2).unwrap();
         let (call, tracker) = bind.call();
-        let raw_response = handler.handle_request(call.as_request()).unwrap();
+        let raw_response = handler
+            .handle_request(call.as_request())
+            .as_option()
+            .unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         let result: Option<usize> = tracker.get_return(&mut response).unwrap();
         assert_eq!(result, Some(3));
@@ -1042,7 +1081,7 @@ mod test {
                     .notification()
                     .as_request()
             ),
-            None
+            MaybeReply::DontReply
         );
     }
 
@@ -1060,7 +1099,10 @@ mod test {
 
         let bind = adder::checked_add(1, 2).unwrap();
         let (call, tracker) = bind.call();
-        let raw_response = handler.handle_request(call.as_request()).unwrap();
+        let raw_response = handler
+            .handle_request(call.as_request())
+            .as_option()
+            .unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         let result: Option<usize> = tracker.get_return(&mut response).unwrap();
         assert_eq!(result, Some(3));
@@ -1068,7 +1110,7 @@ mod test {
         let call = adder::checked_add(1, 2).unwrap();
         assert_eq!(
             handler.handle_request(call.notification().as_request()),
-            None
+            MaybeReply::DontReply
         );
     }
 
@@ -1078,14 +1120,17 @@ mod test {
 
         let bind = adder::echo_ref(&2).unwrap();
         let (call, tracker) = bind.call();
-        let raw_response = handler.handle_request(call.as_request()).unwrap();
+        let raw_response = handler
+            .handle_request(call.as_request())
+            .as_option()
+            .unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
         assert_eq!(tracker.get_return(&mut response).unwrap(), 2);
 
         let call = adder::echo_ref(&2).unwrap();
         assert_eq!(
             handler.handle_request(call.notification().as_request()),
-            None
+            MaybeReply::DontReply
         );
     }
 
@@ -1100,7 +1145,7 @@ mod test {
         let bind2 = adder::wrapping_add(1, 1).unwrap();
         let (call2, tracker2) = bind2.call();
         let json_request = Call::batch_request(&[call0, call1, call2]);
-        let json_response = handler.handle_request(json_request).unwrap();
+        let json_response = handler.handle_request(json_request).as_option().unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(json_response).unwrap();
         assert_eq!(tracker0.get_return(&mut response).unwrap(), Some(0));
         assert_eq!(tracker2.get_return(&mut response).unwrap(), 2);

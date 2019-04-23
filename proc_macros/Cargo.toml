@@ -4,7 +4,7 @@ description = """
 Procedural macro portion of easy-jsonrpc. Don't use this crate directly. Use easy-jsonrpc instead.
 """
 repository = "https://github.com/layer1capital/easy-jsonrpc"
-version = "0.4.1"
+version = "0.5.0"
 authors = ["Andrew Dirksen <andrew@dirksen.com>"]
 license = "Apache-2.0"
 edition = "2018"
