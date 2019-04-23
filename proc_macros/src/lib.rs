@@ -12,21 +12,6 @@ use syn::{
     FnDecl, Ident, ItemTrait, MethodSig, Pat, PatIdent, ReturnType, TraitItem, Type, TypeTuple,
 };
 
-/// Generate a Handler implmentation and for trait input.
-#[deprecated(since = "0.1.5", note = "please use `rpc` instead")]
-#[proc_macro_attribute]
-pub fn jsonrpc_server(
-    _: proc_macro::TokenStream,
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    let trait_def = parse_macro_input!(item as ItemTrait);
-    let server_impl = raise_if_err(impl_server(&trait_def));
-    proc_macro::TokenStream::from(quote! {
-        #trait_def
-        #server_impl
-    })
-}
-
 /// Generate a Handler implementation and client helpers for trait input.
 ///
 /// Example usage:

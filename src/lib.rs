@@ -174,7 +174,6 @@ assert_eq!(tracker2.get_return(&mut response).unwrap(), 2);
 
 const SERIALZATION_ERROR: i64 = -32000;
 
-pub use easy_jsonrpc_proc_macro::jsonrpc_server;
 pub use easy_jsonrpc_proc_macro::rpc;
 
 // used from generated code
@@ -379,7 +378,9 @@ impl Params {
                 }
                 debug_assert_eq!(ar.len(), names.len());
                 match ma.keys().next() {
-                    Some(key) => return Err(InvalidArgs::ExtraNamedParameter { name: key.clone() }),
+                    Some(key) => {
+                        return Err(InvalidArgs::ExtraNamedParameter { name: key.clone() })
+                    }
                     None => ar,
                 }
             }
@@ -997,7 +998,7 @@ mod test {
 
     #[test]
     fn adder_client_non_macro() {
-        #[easy_jsonrpc::jsonrpc_server]
+        #[easy_jsonrpc::rpc]
         trait Adder {
             fn checked_add(&self, a: usize, b: usize) -> Option<usize> {
                 a.checked_add(b)
@@ -1005,8 +1006,8 @@ mod test {
         }
 
         #[allow(non_camel_case_types)]
-        pub enum adder {}
-        impl adder {
+        pub enum adder_client {}
+        impl adder_client {
             fn checked_add(
                 arg0: usize,
                 arg1: usize,
@@ -1027,7 +1028,7 @@ mod test {
         impl Adder for () {}
         let handler = &() as &dyn Adder;
 
-        let bind = adder::checked_add(1, 2).unwrap();
+        let bind = adder_client::checked_add(1, 2).unwrap();
         let (call, tracker) = bind.call();
         let raw_response = handler.handle_request(call.as_request()).unwrap();
         let mut response = easy_jsonrpc::Response::from_json_response(raw_response).unwrap();
@@ -1036,7 +1037,7 @@ mod test {
 
         assert_eq!(
             handler.handle_request(
-                adder::checked_add(1, 2)
+                adder_client::checked_add(1, 2)
                     .unwrap()
                     .notification()
                     .as_request()
