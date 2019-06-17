@@ -3,8 +3,9 @@
 use easy_jsonrpc::rpc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
+// Sync + Send is only for needed the http listener example
 #[rpc]
-pub trait FrobMachine {
+pub trait FrobMachine: Sync + Send {
     fn frob(&self);
     fn unfrob(&self);
     fn get_frob_count(&self) -> i32;
