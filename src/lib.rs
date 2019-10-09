@@ -330,6 +330,9 @@ fn handle_parsed_request<S: ?Sized + Handler>(
 }
 
 #[doc(hidden)]
+#[derive(
+    Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub enum InvalidArgs {
     WrongNumberOfArgs { expected: usize, actual: usize },
     ExtraNamedParameter { name: String },
@@ -418,8 +421,8 @@ impl Params {
         };
         if ar.len() != names.len() {
             Err(InvalidArgs::WrongNumberOfArgs {
-                expected: ar.len(),
-                actual: names.len(),
+                expected: names.len(),
+                actual: ar.len(),
             })
         } else {
             Ok(ar)
@@ -665,7 +668,7 @@ mod test {
     mod easy_jsonrpc {
         pub use crate::*;
     }
-    use super::{Handler, MaybeReply};
+    use super::{Handler, InvalidArgs, MaybeReply, Params};
     use jsonrpc_core;
     use serde_json::{json, Value};
 
@@ -1168,5 +1171,40 @@ mod test {
             fn frob(&self) -> Foo;
             fn borf(&self, foo: Foo);
         }
+    }
+
+    // https://github.com/layer1capital/easy-jsonrpc/issues/8
+    #[test]
+    fn wrong_num_arg_err() {
+        assert_adder_response(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "checked_add",
+                "params": [1],
+                "id": 1
+            }),
+            json!({
+                "error": {
+                    "code": -32602,
+                    "message": "WrongNumberOfArgs. Expected 2. Actual 1"
+                },
+                "id": 1,
+                "jsonrpc": "2.0"
+            }),
+        );
+
+        let res = Params::from_rc_params(jsonrpc_core::Params::Array(vec![
+            json!(1),
+            json!(2),
+            json!(3),
+        ]))
+        .get_rpc_args(&["arg_one", "arg_two"]);
+        assert_eq!(
+            res,
+            Err(InvalidArgs::WrongNumberOfArgs {
+                expected: 2,
+                actual: 3
+            })
+        );
     }
 }
