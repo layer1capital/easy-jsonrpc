@@ -4,7 +4,7 @@ description = """
 Convert a trait definition into a jsonrpc api.
 """
 repository = "https://github.com/layer1capital/easy-jsonrpc"
-version = "0.5.2"
+version = "0.5.3"
 authors = ["Andrew Dirksen <andrew@dirksen.com>"]
 license = "Apache-2.0"
 documentation = "https://docs.rs/easy-jsonrpc"
